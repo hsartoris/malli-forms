@@ -90,8 +90,8 @@
    ;:tel
    :text
    ;:time
-   :url
-   ;:week])
+   ;:week
+   :url])
 
 (def field-spec-schema
   [:map {:registry {::type input-types-schema}}
@@ -219,13 +219,18 @@
     (some? type)                  (assoc :type type)
     (some? attributes)            (conj attributes)))
 
+(defn- add-label
+  "When `label` is non-nil, adds a label field in front of `markup`"
+  [markup label id]
+  (if label
+    (list [:label {:for id} label] markup)
+    markup))
+
 (defn- labeled-input
   [{::keys [id label] :as field-spec} value]
-  (list
-    (when label
-      [:label {:for id} label])
-    [:input (props->attrs field-spec value)]))
-
+  (add-label
+    [:input (props->attrs field-spec value)]
+    label id))
 
 (defmulti render-field
   "Renders a field, keyed either on `(::type field-spec)` or `(m/type schema)`"
@@ -235,23 +240,21 @@
 
 (defmethod render-field :default
   [schema value]
-  (prn schema value)
+  ;(prn schema value)
   (labeled-input (m/properties schema) value))
 
 (defmethod render-field :map
   [schema m]
-  (prn m)
+  ;(prn m)
   (map (fn [[field _ child-schema :as child]]
-         (prn  child)
+         ;(prn  child)
          (render-field child-schema (get m field)))
        (m/children schema)))
   
 (defmethod render-field :enum
   [schema value]
   (let [{::keys [id label name] :as props} (m/properties schema)]
-    (list
-      (when label
-        [:label {:for id} label])
+    (add-label
       [:select (props->attrs props nil)
        (for [child (m/children schema)
              :let [cval (if (keyword? child)
@@ -261,7 +264,8 @@
          [:option
           (cond-> {:value cval}
             sel? (assoc :selected true))
-          (value->label cval)])])))
+          (value->label cval)])]
+      label id)))
 
 (def render-field-transformer
   "Transformer that renders field specs into hiccup markup"
@@ -272,7 +276,7 @@
    ;; on schema
    :default-encoder {:compile (fn [schema _]
                                 {:leave (fn [value]
-                                          (prn schema value)
+                                          ;(prn schema value)
                                           (render-field schema value))})}})
 
 (defn encode-fields
@@ -292,6 +296,6 @@
   "Encode a form from a schema, optionally with a (partial) object"
   ([schema] (encode-form schema nil))
   ([schema source]
-   [:form (update (::attributes (m/properties schema))
-                  :method #(or 
+   ;[:form (update (::attributes (m/properties schema))
+   ;               :method #(or 
    (encode-fields schema source)))

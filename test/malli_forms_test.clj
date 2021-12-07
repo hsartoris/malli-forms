@@ -1,6 +1,7 @@
 (ns malli-forms-test
   (:require
     [clojure.test :as test :refer [deftest is]]
+    [malli.core :as m]
     [malli-forms :as mf]))
 
 (deftest munge-name-part-test
@@ -20,48 +21,44 @@
          (mf/path->name [:my-map :some/field])))
   (is (= "something" (mf/path->name [:something]))))
 
-(deftest input-type-test
-  (is (= :text
-         (mf/schema->input-type [:enum :a :b :c])
-         (mf/schema->input-type [:enum :a "b"])))
-  (is (= :number
-         (mf/schema->input-type [:< 4] [:> 0]))))
-
 (deftest field-spec-test
-  (is (= (malli.core/schema
-           [:and #::mf{:name  "root"
-                       :path  []
-                       :label nil
-                       :id    "mf-root"
-                       :type  :number}
-            [:< #::mf{:name   "0"
-                      :path   [0]
-                      :label  "0"
-                      :id     "mf-0"
-                      :type   :number} 4]
-            [:> #::mf{:name   "1"
-                      :path   [1]
-                      :label  "1"
-                      :id     "mf-1"
-                      :type   :number} 0]])
-         (mf/complete-field-specs [:and [:< 4] [:> 0]]))))
-        
+  (is (= [:and #::mf{:name  "root"
+                     :path  []
+                     :label nil
+                     :id    "mf-root"
+                     :type  :number}
+          [:< #::mf{:name   "0"
+                    :path   [0]
+                    :label  "0"
+                    :id     "mf-0"
+                    :type   :number} 4]
+          [:> #::mf{:name   "1"
+                    :path   [1]
+                    :label  "1"
+                    :id     "mf-1"
+                    :type   :number} 0]]
+         (-> [:and [:< 4] [:> 0]]
+             mf/complete-field-specs
+             m/form))))
 
 (deftest single-input-test
-  (is (= [:input {:id   "mf-root"
-                  :name "root"
-                  :type :email}])
-         (mf/encode-fields [string? {::mf/type :email}]))
+  (is (= [:input {:id       "mf-root"
+                  :name     "root"
+                  :required true
+                  :type     :email}])
+         (mf/encode-fields [string? {::mf/type :email}] nil))
   (is (= '(([:label {:for "mf-password"} "Password"]
-            [:input {:id   "mf-password"
-                     :name "password"
-                     :type "text"}]))
-         (mf/encode-fields [:map [:password string?]])))
+            [:input {:id        "mf-password"
+                     :name      "password"
+                     :type      :text
+                     :required  true}]))
+         (mf/encode-fields [:map [:password string?]] nil)))
   (is (= '(([:label {:for "mf-email"} "Email"]
-            [:input {:id   "mf-email"
-                     :name "email"
-                     :type "email"}]))
-         (mf/encode-fields [:map [:email {::mf/type :email} string?]]))))
+            [:input {:id        "mf-email"
+                     :name      "email"
+                     :type      :email
+                     :required  true}]))
+         (mf/encode-fields [:map [:email {::mf/type :email} string?]] nil))))
            
 (deftest enum-test
   (is (= [:select {:name    "root"
@@ -70,8 +67,7 @@
           '([:option {:value "one"} "One"]
             [:option {:value "two"} "Two"]
             [:option {:value "three"} "Three"])]
-         (mf/encode-fields
-            [:enum :one :two :three]))))
+         (mf/encode-fields [:enum :one :two :three] nil))))
 
 (deftest map-test
   (is (= '(([:label {:for "mf-user_FSLASH_id"} "User ID"]

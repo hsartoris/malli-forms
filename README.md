@@ -71,6 +71,9 @@ like [Unpoly](https://github.com/unpoly/unpoly), the list of expected
 attributes
 [doesn't include `required`](https://github.com/jkk/formative/issues/63)[^1].
 
+[^1]: This is also not an example of an attitude towards maintaining a
+      library that inspires overwhelming confidence.
+
 ##### Doesn't always play nicely with common Ring parsing
 Mostly to do with checkbox handling.
 
@@ -80,5 +83,7 @@ involved in rendering a form is already present in a malli schema, if
 you have one. Such a schema can also be used in multiple areas, as
 opposed to a single-purpose form spec. 
 
-[^1]: This is also not an example of an attitude towards maintaining a
-      library that inspires overwhelming confidence.
+## Development
+```bash
+clojure -A:test:dev -M:repl/rebel
+```

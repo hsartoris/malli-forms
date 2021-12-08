@@ -1,0 +1,23 @@
+{:tasks {install-clj-kondo  {:doc "Installs clj-kondo to ~/.local/bin. Optionally provide version string."
+                             :task (let [version (first *command-line-args*)
+                                         home (System/getenv "HOME")
+                                         cmd (str "./install-clj-kondo --dir " home "/.local/bin"
+                                                  (when version
+                                                    (str " --version " version)))]
+                                     (printf "Installing clj-kondo (version: %s)\n" (or version "latest"))
+                                     (shell "curl -sLO https://raw.githubusercontent.com/clj-kondo/clj-kondo/master/script/install-clj-kondo")
+                                     (shell "chmod +x install-clj-kondo")
+                                     (shell cmd)
+                                     (shell "rm install-clj-kondo"))}
+         -ensure-clj-kondo  {:doc "Ensures that some version of clj-kondo is installed"
+                             :requires ([babashka.fs :as fs])
+                             :task (when-not (fs/which "clj-kondo")
+                                     (run 'install-clj-kondo))}
+         setup-clj-kondo    {:doc "Lints classpath and copies configurations from dependencies."
+                             :depends [-ensure-clj-kondo]
+                             :enter (println "Linting entire classpath - errors will occur")
+                             :task (shell {:continue true} ;; don't want to fail if dependencies fail
+                                          "clj-kondo --lint " (with-out-str (clojure "-Spath"))
+                                          "--dependencies --parallel --copy-configs")}
+         lint               {:doc "Run clj-kondo on the project"
+                             :task (shell "clj-kondo --lint src --parallel")}}}

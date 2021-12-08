@@ -1,0 +1,5 @@
+{:output {:progress true}
+ :linters {:missing-docstring             {:level :warning}
+           :shadowed-var                  {:level :warning}
+           :unsorted-required-namespaces  {:level :warning}
+           :consistent-alias              {:level :error}}}

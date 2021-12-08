@@ -1,5 +1,4 @@
-{:deps {metosin/malli {:git/url "https://github.com/metosin/malli.git"
-                       :sha "bbd4589603129f648a97c994d3fb1386ee69270e"}}
+{:deps {metosin/malli {:mvn/version "0.7.0"}}
  :aliases {:test  {:extra-paths ["test"]}
            :dev   {:extra-paths ["dev/src"]}
            :repl/rebel

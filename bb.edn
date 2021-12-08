@@ -24,4 +24,8 @@
          repl               {:doc "Run a development REPL"
                              :task (clojure "-A:dev:test" "-M:repl/rebel")}
          cloverage          {:doc "Check code coverage"
-                             :task (clojure "-A:test" "-M:cloverage")}}}
+                             :task (clojure "-A:test" "-M:cloverage")}
+         antq               {:doc "Alias for outdated"
+                             :task (run 'outdated)}
+         outdated           {:doc "Find outdated dependencies"
+                             :task (clojure "-A:dev:test" "-M:outdated")}}}

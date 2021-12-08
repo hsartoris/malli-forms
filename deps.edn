@@ -8,4 +8,9 @@
             :main-opts  ["-m" "nrepl.cmdline"
                          "--middleware" "[cider.nrepl/cider-middleware]"
                          "-i"
-                         "-f" "rebel-readline.main/-main"]}}}
+                         "-f" "rebel-readline.main/-main"]}
+           :cloverage {:extra-deps {cloverage/cloverage {:mvn/version "1.2.2"}}
+                       :main-opts ["-m" "cloverage.coverage"
+                                   "--ns-regex" "malli-forms*"
+                                   "--ns-exclude-regex" ".*test"
+                                   "--test-ns-regex" ".*test"]}}}

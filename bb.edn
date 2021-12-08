@@ -20,6 +20,7 @@
                                           "clj-kondo --lint " (with-out-str (clojure "-Spath"))
                                           "--dependencies --parallel --copy-configs")}
          lint               {:doc "Run clj-kondo on the project"
+                             :depends [-ensure-clj-kondo]
                              :task (shell "clj-kondo --lint src --parallel")}
          repl               {:doc "Run a development REPL"
                              :task (clojure "-A:dev:test" "-M:repl/rebel")}

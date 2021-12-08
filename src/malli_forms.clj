@@ -1,9 +1,95 @@
 (ns malli-forms
   (:require
+    [clojure.set :as set]
     [clojure.string :as str]
     [malli.core :as m]
+    [malli.registry :as mr]
     [malli.transform :as mt]
     [malli.util :as mu]))
+
+;; ------ schema definitions ------
+
+(def field-spec-properties-keys
+  "The keys of a field spec, as they will appear when embedded in the
+  properties of a schema"
+  [::name
+   ::label
+   ::id
+   ::type
+   ::attributes
+   ;; TODO: will/should this appear?
+   ::render?])
+
+(def ^:private static-registry
+  {::type         [:enum :number :text
+                   ;; TODO
+                   :date :email :hidden :checkbox :password :submit :url]
+                   ;; even more TODO
+                   ;; :radio :range
+                   ;; :color :datetime-local :file :image :month :reset :search :tel :time :week
+   ::name         string?
+   ::label        string?
+   ::id           string?
+   ;; TODO
+   ::attributes   [:map-of :keyword :any]
+   ::render?      [boolean?
+                   {:doc "When true, this field spec should be preserved as it is ready to render"}]
+   ::field-spec.partial (into [:map {:doc "What a field spec will look like
+                                          when one or more fields is defined in
+                                          the properties of a schema"}]
+                              (map #(vector % {:optional true}))
+                              field-spec-properties-keys)
+   ::field-spec   [:map 
+                   [:name     ::name]
+                   [:label    {:optional true} ::label]
+                   [:id       ::id]
+                   [:type     {:optional true} ::type]
+                   [:attributes ::attributes]
+                   [:render?  {:optional true} ::render?]]})
+
+
+(def ^:private local-registry
+  "Temporary mutable malli registry for development; no need for it to stay."
+  (atom {}))
+
+;(defn- def!
+;  "Add a schema definition to the local registry"
+;  [schema-key schema]
+;  (swap! local-registry assoc schema-key schema))
+
+(mr/set-default-registry!
+  (mr/composite-registry
+    (m/default-schemas)
+    (mu/schemas)
+    (mr/simple-registry static-registry)
+    (mr/mutable-registry local-registry)))
+
+;; ------ utilities -------
+
+(defn- unqualify
+  ":some/kw -> :kw"
+  [kw]
+  (keyword (name kw)))
+
+(def ^:private sorted-set-by-count
+  (sorted-set-by
+    (fn [x y]
+      (compare [(count x) x] [(count y) y]))))
+
+;; TODO: test
+(defn- intersect-maps
+  "Returns a map that contains only those entries that are present in every
+  map provided."
+  ([m] m)
+  ([m1 m2]
+   (into {} (set/intersection (set m1) (set m2))))
+  ([m1 m2 & maps]
+   ;; TODO: doubtless wildly suboptimal, not that it's all that important
+   (let [map-sets (into sorted-set-by-count (map set) (conj maps m1 m2))]
+     (->> (reduce set/intersection (first map-sets) (rest map-sets))
+          (into {})))))
+
+;; ------ name/label handling ------
 
 (defn- re-quote
   [s]
@@ -24,12 +110,12 @@
        (str/join \|)
        re-pattern))
 
-(def ^:private demunge-re
-  "Regex matching replacements in [[name-substring-replacements]]"
-  (->> (vals name-substring-replacements)
-       (mapv re-quote)
-       (str/join \|)
-       re-pattern))
+;(def ^:private demunge-re
+;  "Regex matching replacements in [[name-substring-replacements]]"
+;  (->> (vals name-substring-replacements)
+;       (mapv re-quote)
+;       (str/join \|)
+;       re-pattern))
 
 (defn munge-name-part
   "Munge a part of a field name into an HTML-compatible string"
@@ -66,34 +152,10 @@
   [value]
   (path->label [value]))
 
-(def input-types-schema
-  [:enum
-   :checkbox
-   ;:color
-   :date
-   ;:datetime-local
-   :email
-   ;:file
-   :hidden
-   ;:image
-   ;:month
-   :number
-   :password
-   ;; TODO
-   ;:radio
-   ;; TODO
-   ;:range
-   ;:reset
-   ;:search
-   :submit
-   ;:tel
-   :text
-   ;:time
-   ;:week
-   :url])
-
+;; ------ building specs from a schema ------
 
 (def schema-type-by-input-type
+  "Map of input type keywords to the schema types that they correspond with"
   '{:text     [string?
                :string
                keyword?
@@ -144,127 +206,106 @@
   [schema]
   ((m/type schema) schema-type->input-type))
 
-(defmulti input-type
-  "Get an input type for a given schema and children, given that the children
-  will already have had ::type set on them, if possible"
-  (fn [schema _children]
-    (m/type schema)))
 
-(defmethod input-type :default
-  [schema _]
-  ((m/type schema) schema-type->input-type))
 
-(defmethod input-type :maybe
-  [_ children]
-  (::type (m/properties (first children))))
-
-(defmethod input-type :and
-  [_ children]
-  (let [ctypes (into #{} (map #(-> % m/properties ::type)) children)]
-    (when (= 1 (count ctypes))
-      (first ctypes))))
-
-(defmethod input-type :enum
-  [_ _]
-  ;; enum will be a select and that doesn't support input type
-  nil)
-
-(defn schema->input-type
-  "Wraps [[input-type]] to call with schema and (m/children schema)"
-  [schema]
-  (input-type schema (m/children schema)))
-
-(def field-spec-schema
-  "What a field spec should look like"
-  ;; TODO: this is a partial field spec, really
-  [:map {:registry {::type input-types-schema}}
-   [::name    string?]
-   [::label   {:optional true} string?]
-   [::id      string?]
-   [::type    {:optional true}]
-   [::attributes [:map-of :keyword :any]]
-   [::render? {:doc "When true, this field spec should be preserved as it is ready to render"
-               :optional true} boolean?]])
-
-(def ^:private field-spec-keys
-  (map first (m/children field-spec-schema)))
-
-(def ^:private only-field-spec
-  "Pass a map and receive one conformed to only field spec keys"
-  (m/decoder field-spec-schema mt/strip-extra-keys-transformer))
+(defn- naive-field-spec
+  "Extract a (partial) field spec from the properties of a schema by retrieving
+  the namespaced keys into non-namespaced ones"
+  {:malli/schema [:=> [:cat [:maybe :map]] ::field-spec]}
+  [props]
+  (reduce
+    (fn [out k]
+      (if-some [kv (find props k)]
+        (assoc out (unqualify (key kv)) (val kv))
+        out))
+    {} field-spec-properties-keys))
 
 (defn- default
   "If `k` is not set in `m`, set it to `v`."
   [m k v]
-  (if-not (contains? m k)
-    (assoc m k v)
-    m))
-
-(defn- field-spec
-  "Generate a field spec for a given schema and path"
-  [schema path]
-  (let [props (m/properties schema)
-        input-name (or (::name props) (path->name path))]
-    (-> props
-        (assoc ::name input-name, ::path path)
-        (default ::required (not (:optional props)))
-        (default ::label    (path->label path))
-        (default ::id       (str "mf-" input-name))
-        (default ::type     ((m/type schema) schema-type->input-type)))))
+  (if (some? (get m k)) m (assoc m k v)))
 
 (defmulti build-field-spec
   "Build the components of a field spec that can be known for a particular
-  schema, including based on its postwalked children"
-  (fn [schema _properties _children _path]
+  schema, including based on the field specs of its children"
+  (fn [schema _naive-field-spec _children _path]
     (m/type schema)))
 
 (defmethod build-field-spec :default
-  [schema props _ _]
+  [schema spec _ _]
   ;; best effort when no specific handling is to guess the type
-  (default props ::type (schema->input-type schema)))
-
-(defn- field-spec-intersection
-  "Returns a field spec that is a submap of each of `field-specs`"
-  [field-specs]
-  (reduce
-    (fn [out k]
-      (let [values (set (keep k field-specs))]
-        (if (= 1 (count values))
-          (assoc out k (first values))
-          out)))
-    nil
-    field-spec-keys))
+  (default spec :type (schema->input-type schema)))
 
 (defmethod build-field-spec :or
-  [_ props child-specs _]
-  (into props (field-spec-intersection child-specs)))
+  [_ spec child-specs _]
+  (into spec (intersect-maps child-specs)))
 (defmethod build-field-spec :and
-  [_ props child-specs _]
-  (into props (field-spec-intersection child-specs)))
+  [_ spec child-specs _]
+  (into spec (intersect-maps child-specs)))
 
 (defmethod build-field-spec :maybe
   ;; any properties set explicitly on this schema, under those of child, and
   ;; set to required=false
-  [_ props [child] _]
-  (-> props
-      (conj (only-field-spec child))
-      (default ::required false)))
+  [_ spec [child-spec] _]
+  (-> (conj spec child-spec)
+      (default :required false)))
+
+(defn- add-path-info
+  "Add name, id, and label to a spec, based on a path already added to it"
+  [spec]
+  (let [path (:path spec)
+        input-name (or (:name spec) (path->name path))]
+    (-> (assoc spec :name input-name)
+        (default :label   (path->label path))
+        (default :id      (str "mf-" input-name)))))
 
 (defmethod build-field-spec ::m/val
-  [_ props [child] _]
+  [schema spec [child-spec] _]
   ;; any properties set explicitly on this schema, under those of child, and
   ;; set to required=(not optional)
-  (-> props
-      (into (only-field-spec child))
-      (default ::required (not (:optional props)))))
+  (-> (conj spec child-spec)
+      (default :required  (not (:optional (m/properties schema))))))
 
-(defn- preserve-renderable
-  "Remove field spec keys from a schema's properties, unless it is marked as
-  renderable."
-  [properties]
-  (if (::render? properties)
-    properties
-    (apply dissoc properties field-spec-keys)))
+(defmethod build-field-spec ::m/schema
+  [_ _ [child-spec] _]
+  ;; contains a ref to another schema - take unconditionally
+  child-spec)
+
+(defmethod build-field-spec :map
+  [_ spec _ _]
+  ;; Map children will render as fields, so they don't get integrated
+  spec)
+
+(defmethod build-field-spec 'map?
+  [_ spec _ _]
+  ;; Map children will render as fields, so they don't get integrated
+  spec)
+
+;; TODO: to implement
+(defmethod build-field-spec 'seqable? [_ _ _ _])
+(defmethod build-field-spec 'indexed? [_ _ _ _])
+(defmethod build-field-spec 'vector? [_ _ _ _])
+(defmethod build-field-spec :vector [_ _ _ _])
+(defmethod build-field-spec 'list? [_ _ _ _])
+(defmethod build-field-spec 'seq? [_ _ _ _])
+(defmethod build-field-spec :set [_ _ _ _])
+(defmethod build-field-spec 'set? [_ _ _ _])
+(defmethod build-field-spec 'coll? [_ _ _ _])
+(defmethod build-field-spec 'empty? [_ _ _ _])
+(defmethod build-field-spec 'associative? [_ _ _ _])
+(defmethod build-field-spec 'sequential? [_ _ _ _])
+(defmethod build-field-spec :sequential [_ _ _ _])
+(defmethod build-field-spec :tuple [_ _ _ _])
+
+(defmulti mark-render-children
+  "Mark a schema's children as rendering. Default is not to do anything. Keyed
+  on schema type"
+  (fn [schema _children]
+    (m/type schema)))
+
+(defmethod mark-render-children :default
+  [_ children]
+  children)
 
 (defn add-field-specs
   "Postwalk schema, calling `build-field-spec` with the schema, its properties,
@@ -273,32 +314,39 @@
   [schema]
   (m/walk schema
           (fn [schema path children _]
-            (prn schema path children)
-            ;; TODO: put calculated field spec in nested key to avoid removing
-            ;; values that were actually specified
-            (-> schema
-                (m/-set-children
-                  (map #(mu/update-properties % preserve-renderable)
-                       children))
-                (m/-set-properties
-                  (build-field-spec
-                    schema
-                    (or (m/properties schema) {})
-                    (map m/properties children)
-                    path))))))
+            ;(prn schema path children)
+            (prn (m/type schema) children)
+            (let [children' (mark-render-children schema children)
+                  child-specs (mapv #(when (m/schema? %)
+                                       (::spec (m/properties %)))
+                                    children')
+                  schema' (m/-set-children schema children')
+                  props   (m/properties schema)
+                  ;; TODO: remove path I suppose
+                  spec    (build-field-spec schema (naive-field-spec props) child-specs path)]
+              ;(if (some :render? child-specs)
+              ;  (do (println "Not building spec for parent with rendering child:"
+              ;               schema child-specs)
+              ;      schema')
+              (mu/update-properties
+                schema'
+                #(assoc % ::spec (assoc spec :path path)))))
+          #::m{:walk-entry-vals   true
+               :walk-schema-refs  true
+               :walk-refs         true}))
 
-(defn complete-field-specs
-  [schema]
-  (m/walk schema
-          (fn [schema path children _]
-            (prn schema path children)
-            (m/-set-properties
-              (m/-set-children schema children)
-              (complete-field-spec
-                (m/type schema)
-                (field-spec schema path)
-                children)))
-          {::m/walk-entry-vals true}))
+;(defn complete-field-specs
+;  [schema]
+;  (m/walk schema
+;          (fn [schema path children _]
+;            (prn schema path children)
+;            (m/-set-properties
+;              (m/-set-children schema children)
+;              (complete-field-spec
+;                (m/type schema)
+;                (field-spec schema path)
+;                children)))
+;          {::m/walk-entry-vals true}))
 
 ;(defn complete-field-specs
 ;  [schema]
@@ -333,13 +381,10 @@
                 (mu/update-properties assoc ::path path)))))
 
 (defn- props->attrs
-  "Convert malli properties from a schema into an attribute map for an input"
-  [{::keys [id name attributes type required]} value]
-  (cond-> {:id    id
-           :name  name}
+  "Convert field spec from a schema into an attribute map for an input"
+  [{:keys [attributes] :as spec} value]
+  (cond-> (dissoc spec :attributes)
     (some? value)       (assoc :value value)
-    (true? required)    (assoc :required true)
-    (some? type)        (assoc :type type)
     (some? attributes)  (conj attributes)))
 
 (defn- add-label
@@ -368,7 +413,7 @@
 (defn- render-enum
   "Render an enum schema, with possible value"
   [schema value]
-  (let [{::keys [id label name] :as props} (m/properties schema)]
+  (let [{::keys [id label] :as props} (m/properties schema)]
     (add-label
       [:select (props->attrs props nil)
        (for [child (m/children schema)
@@ -440,15 +485,16 @@
 (defn encode-fields
   "Encode the fields of a form from a schema, with an optional object"
   [schema source]
-  (-> (complete-field-specs schema)
+  ;; TODO: point to new version
+  (-> (add-field-specs schema)
       (m/encode source (mt/transformer render-field-transformer))))
 
 (def form-props-schema
+  "Attributes map that may be defined in the top level field of a schema"
   [:map
    [::attributes
     [:map
      [:method [:enum {:default :POST} :GET :POST]]]]])
-
 
 (defn encode-form
   "Encode a form from a schema, optionally with a (partial) object"

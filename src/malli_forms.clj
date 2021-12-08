@@ -3,8 +3,7 @@
     [clojure.string :as str]
     [malli.core :as m]
     [malli.transform :as mt]
-    [malli.util :as mu])
-  (:import java.util.regex.Pattern))
+    [malli.util :as mu]))
 
 (defn- re-quote
   [s]
@@ -140,6 +139,11 @@
     {}
     schema-type-by-input-type))
 
+(defn schema->input-type
+  "Looks up (m/type schema) in schema-type->input-type"
+  [schema]
+  ((m/type schema) schema-type->input-type))
+
 (defmulti input-type
   "Get an input type for a given schema and children, given that the children
   will already have had ::type set on them, if possible"
@@ -171,12 +175,23 @@
   (input-type schema (m/children schema)))
 
 (def field-spec-schema
+  "What a field spec should look like"
+  ;; TODO: this is a partial field spec, really
   [:map {:registry {::type input-types-schema}}
    [::name    string?]
    [::label   {:optional true} string?]
    [::id      string?]
    [::type    {:optional true}]
-   [::attributes [:map-of :keyword :any]]])
+   [::attributes [:map-of :keyword :any]]
+   [::render? {:doc "When true, this field spec should be preserved as it is ready to render"
+               :optional true} boolean?]])
+
+(def ^:private field-spec-keys
+  (map first (m/children field-spec-schema)))
+
+(def ^:private only-field-spec
+  "Pass a map and receive one conformed to only field spec keys"
+  (m/decoder field-spec-schema mt/strip-extra-keys-transformer))
 
 (defn- default
   "If `k` is not set in `m`, set it to `v`."
@@ -197,33 +212,80 @@
         (default ::id       (str "mf-" input-name))
         (default ::type     ((m/type schema) schema-type->input-type)))))
 
-(defmulti complete-field-spec
-  "Complete a field spec for a schema based on its postwalked children"
-  (fn [schema-type _field-spec _children]
-    (prn schema-type _field-spec _children)
-    schema-type))
+(defmulti build-field-spec
+  "Build the components of a field spec that can be known for a particular
+  schema, including based on its postwalked children"
+  (fn [schema _properties _children _path]
+    (m/type schema)))
 
-(defmethod complete-field-spec :default
-  [_ spec _]
-  spec)
+(defmethod build-field-spec :default
+  [schema props _ _]
+  ;; best effort when no specific handling is to guess the type
+  (default props ::type (schema->input-type schema)))
 
-(defmethod complete-field-spec :maybe
-  [_ spec [child]]
-  ;; use parent field spec for path, label, etc, but mark not required, and
-  ;; copy type from child spec
-  (assoc spec
-         ::required false
-         ::type (::type (m/properties child))))
+(defn- field-spec-intersection
+  "Returns a field spec that is a submap of each of `field-specs`"
+  [field-specs]
+  (reduce
+    (fn [out k]
+      (let [values (set (keep k field-specs))]
+        (if (= 1 (count values))
+          (assoc out k (first values))
+          out)))
+    nil
+    field-spec-keys))
 
-(defmethod complete-field-spec ::m/val
-  [_ spec [child]]
-  (assoc spec ::type (::type (m/properties child))))
+(defmethod build-field-spec :or
+  [_ props child-specs _]
+  (into props (field-spec-intersection child-specs)))
+(defmethod build-field-spec :and
+  [_ props child-specs _]
+  (into props (field-spec-intersection child-specs)))
 
-(defmethod complete-field-spec :and
-  [_ spec children]
-  (let [ctypes (into #{} (map #(-> % m/properties ::type)) children)]
-    (assoc spec ::type (when (= 1 (count ctypes))
-                         (first ctypes)))))
+(defmethod build-field-spec :maybe
+  ;; any properties set explicitly on this schema, under those of child, and
+  ;; set to required=false
+  [_ props [child] _]
+  (-> props
+      (conj (only-field-spec child))
+      (default ::required false)))
+
+(defmethod build-field-spec ::m/val
+  [_ props [child] _]
+  ;; any properties set explicitly on this schema, under those of child, and
+  ;; set to required=(not optional)
+  (-> props
+      (into (only-field-spec child))
+      (default ::required (not (:optional props)))))
+
+(defn- preserve-renderable
+  "Remove field spec keys from a schema's properties, unless it is marked as
+  renderable."
+  [properties]
+  (if (::render? properties)
+    properties
+    (apply dissoc properties field-spec-keys)))
+
+(defn add-field-specs
+  "Postwalk schema, calling `build-field-spec` with the schema, its properties,
+  and the properties of its children, and adding the output to the schema
+  properties."
+  [schema]
+  (m/walk schema
+          (fn [schema path children _]
+            (prn schema path children)
+            ;; TODO: put calculated field spec in nested key to avoid removing
+            ;; values that were actually specified
+            (-> schema
+                (m/-set-children
+                  (map #(mu/update-properties % preserve-renderable)
+                       children))
+                (m/-set-properties
+                  (build-field-spec
+                    schema
+                    (or (m/properties schema) {})
+                    (map m/properties children)
+                    path))))))
 
 (defn complete-field-specs
   [schema]
@@ -324,11 +386,11 @@
   "Transformer that collects field specs"
   {:name :collect-fields
    :default-encoder {:compile (fn [schema _]
-                                (let [field-spec (m/properties schema)]
-                                  {:enter (fn [value]
-                                            (
+                                ;(let [field-spec (m/properties schema)]
+                                ;  {:enter (fn [value]
+                                ;            (
                                 (fn [value]
-                                  (if-some
+                                  ;(if-some
                                   (assoc (m/properties schema) ::value value)))}
                                 ;{:enter (constantly (m/properties schema))})}
    :encoders {:map    {:compile (fn [schema _]

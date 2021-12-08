@@ -93,23 +93,6 @@
    ;:week
    :url])
 
-(def field-spec-schema
-  [:map {:registry {::type input-types-schema}}
-   [::name    string?]
-   [::label   {:optional true} string?]
-   [::id      string?]
-   [::type    {:optional true}]
-   [::attributes [:map-of :keyword :any]]])
-
-(defn- field-spec
-  "Generate a field spec for a given schema and path"
-  [schema path]
-  (let [props (m/properties schema)
-        input-name (or (::name props) (path->name path))]
-    (-> props
-        (assoc  ::name  input-name, ::path path)
-        (update ::label #(or % (path->label path)))
-        (update ::id    #(or % (str "mf-" input-name))))))
 
 (def schema-type-by-input-type
   '{:text     [string?
@@ -187,19 +170,97 @@
   [schema]
   (input-type schema (m/children schema)))
 
+(def field-spec-schema
+  [:map {:registry {::type input-types-schema}}
+   [::name    string?]
+   [::label   {:optional true} string?]
+   [::id      string?]
+   [::type    {:optional true}]
+   [::attributes [:map-of :keyword :any]]])
+
+(defn- default
+  "If `k` is not set in `m`, set it to `v`."
+  [m k v]
+  (if-not (contains? m k)
+    (assoc m k v)
+    m))
+
+(defn- field-spec
+  "Generate a field spec for a given schema and path"
+  [schema path]
+  (let [props (m/properties schema)
+        input-name (or (::name props) (path->name path))]
+    (-> props
+        (assoc ::name input-name, ::path path)
+        (default ::required (not (:optional props)))
+        (default ::label    (path->label path))
+        (default ::id       (str "mf-" input-name))
+        (default ::type     ((m/type schema) schema-type->input-type)))))
+
+(defmulti complete-field-spec
+  "Complete a field spec for a schema based on its postwalked children"
+  (fn [schema-type _field-spec _children]
+    (prn schema-type _field-spec _children)
+    schema-type))
+
+(defmethod complete-field-spec :default
+  [_ spec _]
+  spec)
+
+(defmethod complete-field-spec :maybe
+  [_ spec [child]]
+  ;; use parent field spec for path, label, etc, but mark not required, and
+  ;; copy type from child spec
+  (assoc spec
+         ::required false
+         ::type (::type (m/properties child))))
+
+(defmethod complete-field-spec ::m/val
+  [_ spec [child]]
+  (assoc spec ::type (::type (m/properties child))))
+
+(defmethod complete-field-spec :and
+  [_ spec children]
+  (let [ctypes (into #{} (map #(-> % m/properties ::type)) children)]
+    (assoc spec ::type (when (= 1 (count ctypes))
+                         (first ctypes)))))
+
 (defn complete-field-specs
-  "Walk `schema`, adding values to complete field specs on every subschema"
   [schema]
   (m/walk schema
           (fn [schema path children _]
-            (let [children' (if (= :map (m/type schema))
-                              (for [[k cprops cschema] children]
-                                [k cprops (mu/update-properties cschema merge cprops)])
-                              children)]
+            (prn schema path children)
             (m/-set-properties
-              (m/-set-children schema children')
-              (-> (field-spec schema path)
-                  (update ::type #(or % (input-type schema children')))))))))
+              (m/-set-children schema children)
+              (complete-field-spec
+                (m/type schema)
+                (field-spec schema path)
+                children)))
+          {::m/walk-entry-vals true}))
+
+;(defn complete-field-specs
+;  [schema]
+;  (m/walk schema
+;          (fn [schema path children _]
+;            (let [input-type ((m/type schema) schema-type->input-type)]
+;              (m/-set-properties
+;                (m/-set-children schema children)
+;                (-> (field-spec schema path)
+;                    (update ::type #(or % (input-type schema children)))))))))
+
+;(defn complete-field-specs
+;  "Walk `schema`, adding values to complete field specs on every subschema"
+;  [schema]
+;  (m/walk schema
+;          (fn [schema path children _]
+;            (let [children' (if (= :map (m/type schema))
+;                              (for [[k cprops cschema] children]
+;                                [k cprops (mu/update-properties cschema merge cprops)])
+;                              children)]
+;            (m/-set-properties
+;              (m/-set-children schema children')
+;              (-> (field-spec schema path)
+;                  (update ::type #(or % (input-type schema children')))))))))
 
 (defn add-paths
   "Walk `schema`, adding path to each subschema to its properties"
@@ -211,13 +272,13 @@
 
 (defn- props->attrs
   "Convert malli properties from a schema into an attribute map for an input"
-  [{::keys [id name attributes type] :keys [optional]} value]
+  [{::keys [id name attributes type required]} value]
   (cond-> {:id    id
            :name  name}
-    (some? value)                 (assoc :value value)
-    (not (:optional field-spec))  (assoc :required true)
-    (some? type)                  (assoc :type type)
-    (some? attributes)            (conj attributes)))
+    (some? value)       (assoc :value value)
+    (true? required)    (assoc :required true)
+    (some? type)        (assoc :type type)
+    (some? attributes)  (conj attributes)))
 
 (defn- add-label
   "When `label` is non-nil, adds a label field in front of `markup`"
@@ -233,25 +294,17 @@
     label id))
 
 (defmulti render-field
-  "Renders a field, keyed either on `(::type field-spec)` or `(m/type schema)`"
+  "Renders a field, keyed on `(::type field-spec)`"
   (fn [schema _value]
-    (or (::type (m/properties schema))
-        (m/type schema))))
+    (::type (m/properties schema))))
 
 (defmethod render-field :default
   [schema value]
-  ;(prn schema value)
+  (prn schema value)
   (labeled-input (m/properties schema) value))
-
-(defmethod render-field :map
-  [schema m]
-  ;(prn m)
-  (map (fn [[field _ child-schema :as child]]
-         ;(prn  child)
-         (render-field child-schema (get m field)))
-       (m/children schema)))
   
-(defmethod render-field :enum
+(defn- render-enum
+  "Render an enum schema, with possible value"
   [schema value]
   (let [{::keys [id label name] :as props} (m/properties schema)]
     (add-label
@@ -267,6 +320,32 @@
           (value->label cval)])]
       label id)))
 
+(def collect-fields
+  "Transformer that collects field specs"
+  {:name :collect-fields
+   :default-encoder {:compile (fn [schema _]
+                                (let [field-spec (m/properties schema)]
+                                  {:enter (fn [value]
+                                            (
+                                (fn [value]
+                                  (if-some
+                                  (assoc (m/properties schema) ::value value)))}
+                                ;{:enter (constantly (m/properties schema))})}
+   :encoders {:map    {:compile (fn [schema _]
+                                  (let [child-keys (map #(nth % 0) (m/children schema))]
+                                    {:enter (fn [value]
+                                              ;; if child keys aren't present, transform doesn't recurse to them
+                                              (if (or (nil? value) (map? value))
+                                                (reduce #(update %1 %2 identity) value child-keys)
+                                                value))
+                                     :leave (fn [value]
+                                              ;; preserve order
+                                              (map value child-keys))}))}}})
+
+  "Transformer that replaces schema leaves with form specs for that leaf by
+  default, with some higher-level schema types rendering based on the form
+  specs of their children."
+
 (def render-field-transformer
   "Transformer that renders field specs into hiccup markup"
   ;(let [render-
@@ -277,7 +356,24 @@
    :default-encoder {:compile (fn [schema _]
                                 {:leave (fn [value]
                                           ;(prn schema value)
-                                          (render-field schema value))})}})
+                                          (render-field schema value))})}
+   :encoders {:map  {:compile (fn [schema _]
+                                (let [child-keys (map #(nth % 0) (m/children schema))]
+                                  {:enter (fn [value]
+                                            ;; if child keys aren't present, transform doesn't recurse to them
+                                            (if (or (nil? value) (map? value))
+                                              (reduce #(update %1 %2 identity) value child-keys)
+                                              value))
+                                   :leave (fn [value]
+                                            ;; preserve order
+                                            (map value child-keys))}))}
+                                 ;:leave (fn [value]
+                                 ;         (map (fn [[field _ child-schema :as child]]
+                                 ;                (render-field child-schema (get value field)))
+                                 ;              (m/children schema)))})}
+              :enum {:compile (fn [schema _]
+                                #(render-enum schema %))}}})
+
 
 (defn encode-fields
   "Encode the fields of a form from a schema, with an optional object"

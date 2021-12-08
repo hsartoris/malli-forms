@@ -5,5 +5,6 @@
     [clojure.string :as str]
     [malli-forms :as mf]
     [malli.core :as m]
-    [malli.transform :as mt])
+    [malli.transform :as mt]
+    [malli.util :as mu])
   (:use clojure.repl))

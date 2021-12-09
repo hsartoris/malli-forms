@@ -1,8 +1,8 @@
 (ns malli-forms-test
   (:require
     [clojure.test :as test :refer [deftest is]]
-    [malli.core :as m]
-    [malli-forms :as mf]))
+    [malli-forms :as mf]
+    [malli.core :as m]))
 
 (deftest munge-name-part-test
   (is (= "some_FSLASH_field"
@@ -22,31 +22,33 @@
   (is (= "something" (mf/path->name [:something]))))
 
 (deftest field-spec-test
-  (is (= [:and #::mf{:name  "root"
-                     :path  []
-                     :label nil
-                     :id    "mf-root"
-                     :type  :number}
-          [:< #::mf{:name   "0"
-                    :path   [0]
-                    :label  "0"
-                    :id     "mf-0"
-                    :type   :number} 4]
-          [:> #::mf{:name   "1"
-                    :path   [1]
-                    :label  "1"
-                    :id     "mf-1"
-                    :type   :number} 0]]
+  (is (= [:and {::mf/spec {:name  "root"
+                           :path  []
+                           :label nil
+                           :id    "mf-root"
+                           :type  :number}}
+          [:< {::mf/spec {:name   "0"
+                          :path   [0]
+                          :label  "0"
+                          :id     "mf-0"
+                          :type   :number}}
+           4]
+          [:> {::mf/spec {:name   "1"
+                          :path   [1]
+                          :label  "1"
+                          :id     "mf-1"
+                          :type   :number}}
+           0]]
          (-> [:and [:< 4] [:> 0]]
-             mf/complete-field-specs
+             mf/add-field-specs
              m/form))))
 
 (deftest single-input-test
   (is (= [:input {:id       "mf-root"
                   :name     "root"
                   :required true
-                  :type     :email}])
-         (mf/encode-fields [string? {::mf/type :email}] nil))
+                  :type     :email}]
+         (mf/encode-fields [string? {::mf/type :email}] nil)))
   (is (= '(([:label {:for "mf-password"} "Password"]
             [:input {:id        "mf-password"
                      :name      "password"
@@ -100,10 +102,10 @@
              ([:option {:value "active"} "Active"]
               [:option {:value "locked"
                         :selected true} "Locked"]
-              [:option {:value "suspended"} "Suspended"])]))
+              [:option {:value "suspended"} "Suspended"])])))
          (mf/encode-fields
             [:map
              [:user/id {::mf/type :email} string?]
              [:user/state [:enum :active :locked :suspended]]]
             {:user/id     "user@example.com"
-             :user/state  :locked})))))
+             :user/state  :locked}))))

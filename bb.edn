@@ -29,4 +29,6 @@
          antq               {:doc "Alias for outdated"
                              :task (run 'outdated)}
          outdated           {:doc "Find outdated dependencies"
-                             :task (clojure "-A:dev:test" "-M:outdated")}}}
+                             :task (clojure "-A:dev:test" "-M:outdated")}
+         test:cognitect     {:doc "Run tests with cognitect test-runner"
+                             :task (clojure "-A:dev:test" "-X:test/cognitect")}}}

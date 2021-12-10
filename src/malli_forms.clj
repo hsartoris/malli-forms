@@ -3,7 +3,6 @@
     [clojure.set :as set]
     [clojure.string :as str]
     [malli.core :as m]
-    [malli.registry :as mr]
     [malli.transform :as mt]
     [malli.util :as mu]))
 
@@ -29,7 +28,7 @@
   (def s2 [:merge s1 ::field-spec])
   (def s3 [:select-keys s1 [:a]]))
 
-(def ^:private static-registry
+(def ^:private local-registry
   {::type         [:enum :number :text
                    ;; TODO
                    :date :email :hidden :checkbox :password :submit :url
@@ -57,22 +56,11 @@
                    [:attributes ::attributes]
                    [:render?  {:optional true} ::render?]]})
 
-
-(def ^:private local-registry
-  "Temporary mutable malli registry for development; no need for it to stay."
-  (atom {}))
-
-;(defn- def!
-;  "Add a schema definition to the local registry"
-;  [schema-key schema]
-;  (swap! local-registry assoc schema-key schema))
-
-(mr/set-default-registry!
-  (mr/composite-registry
-    (m/default-schemas)
-    (mu/schemas)
-    (mr/simple-registry static-registry)
-    (mr/mutable-registry local-registry)))
+(def ^:private registry
+  "malli registry for this project"
+  (merge (m/default-schemas)
+         (mu/schemas)
+         local-registry))
 
 ;; ------ utilities -------
 
@@ -372,29 +360,34 @@
   "Postwalk schema, calling `build-field-spec` with the schema, its properties,
   and the properties of its children, and adding the output to the schema
   properties."
-  [schema]
-  ;; TODO: use schema to define base path, where possible
-  ;; i.e., if it's a ::m/schema or a keyword, use the type as the root
-  ;; this would allow for better names/labels/legends etc
-  ;(let [base-path (
-  (m/walk
-    (deref-subschemas schema)
-    (fn [schema path children _]
-      ;(prn schema path children)
-      (let [children' (if (children-render (m/type schema))
-                        (map mark-render children)
-                        children)
-            spec (-> schema
-                     (complete-field-spec (extract-field-spec schema)
-                                          (mapv #(when (m/schema? %)
-                                                   (::spec (m/properties %)))
-                                                children))
-                     ;; add path after complete-field-spec in case of
-                     ;; accidental override from child specs
-                     (assoc :path path))]
-        (-> schema
-            (mu/update-properties assoc ::spec spec)
-            (set-children children'))))))
+  ([schema]
+   ;; TODO: remove when not doing active dev
+   (add-field-specs schema {:registry registry}))
+  ([schema options]
+   ;; TODO: use schema to define base path, where possible
+   ;; i.e., if it's a ::m/schema or a keyword, use the type as the root
+   ;; this would allow for better names/labels/legends etc
+   ;(let [base-path (
+   (prn schema)
+   (m/walk
+     (deref-subschemas schema options)
+     (fn [schema path children _]
+       ;(prn schema path children)
+       (let [children' (if (children-render (m/type schema))
+                         (map mark-render children)
+                         children)
+             spec (-> schema
+                      (complete-field-spec (extract-field-spec schema)
+                                           (mapv #(when (m/schema? %)
+                                                    (::spec (m/properties %)))
+                                                 children))
+                      ;; add path after complete-field-spec in case of
+                      ;; accidental override from child specs
+                      (assoc :path path))]
+         (-> schema
+             (mu/update-properties assoc ::spec spec)
+             (set-children children'))))
+     options)))
 
 (defn- props->attrs
   "Convert field spec from a schema into an attribute map for an input"

@@ -31,4 +31,6 @@
          outdated           {:doc "Find outdated dependencies"
                              :task (clojure "-A:dev:test" "-M:outdated")}
          test:cognitect     {:doc "Run tests with cognitect test-runner"
-                             :task (clojure "-A:dev:test" "-X:test/cognitect")}}}
+                             :task (clojure "-A:dev:test" "-X:test/cognitect")}
+         test               {:doc "Forwards to default task runner"
+                             :task (run 'test:cognitect)}}}

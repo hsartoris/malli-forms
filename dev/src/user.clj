@@ -1,3 +1,4 @@
+#_:clj-kondo/ignore
 (ns user
   (:require
     [clojure.data :refer [diff]]
@@ -9,3 +10,8 @@
     [malli.transform :as mt]
     [malli.util :as mu])
   (:use clojure.repl))
+
+;; s/(pprint (m\/form *1))/(pp)/g
+(defmethod pp/simple-dispatch malli.core.Schema
+  [schema]
+  (pp/simple-dispatch (m/form schema)))

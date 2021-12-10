@@ -7,6 +7,10 @@
     [malli.transform :as mt]
     [malli.util :as mu]))
 
+(def form-ns
+  "Namespace of keys that control behavior on field generation for schemas"
+  "malli-forms")
+
 ;; ------ schema definitions ------
 
 (def field-spec-properties-keys
@@ -23,10 +27,11 @@
 (def ^:private static-registry
   {::type         [:enum :number :text
                    ;; TODO
-                   :date :email :hidden :checkbox :password :submit :url]
+                   :date :email :hidden :checkbox :password :submit :url
                    ;; even more TODO
                    ;; :radio :range
                    ;; :color :datetime-local :file :image :month :reset :search :tel :time :week
+                   ]
    ::name         string?
    ::label        string?
    ::id           string?
@@ -71,6 +76,11 @@
   [kw]
   (keyword (name kw)))
 
+(defn- default
+  "If `k` is not set in `m`, set it to `v`."
+  [m k v]
+  (if (some? (get m k)) m (assoc m k v)))
+
 (def ^:private sorted-set-by-count
   (sorted-set-by
     (fn [x y]
@@ -88,6 +98,21 @@
    (let [map-sets (into sorted-set-by-count (map set) (conj maps m1 m2))]
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
+
+(defn- recursive-deref
+  "Recursively actually deref schema; i.e., replace schemas that are references
+  to others with those others. Must happen before walking, as otherwise
+  paths are difficult to recover. m/deref-all doesn't work."
+  [schema]
+  (m/walk schema
+          (m/schema-walker
+            (fn [subschema]
+              ;; TODO: others include :merge, :union, :select-keys
+              (if (#{::m/val ::m/schema :schema} (m/type subschema))
+                (first (m/children subschema))
+                subschema)))
+          #::m{:walk-schema-refs  true
+               :walk-refs         true}))
 
 ;; ------ name/label handling ------
 
@@ -152,6 +177,16 @@
   [value]
   (path->label [value]))
 
+(defn- add-path-info
+  "Add name, id, and label to a spec, based on a path already added to it"
+  [spec]
+  (let [path (:path spec)
+        input-name (or (:name spec) (path->name path))]
+    (-> (assoc spec :name input-name)
+        (default :label   (path->label path))
+        ;; TODO: probably gensym for ids
+        (default :id      (str "mf-" input-name)))))
+
 ;; ------ building specs from a schema ------
 
 (def schema-type-by-input-type
@@ -202,108 +237,67 @@
     {}
     schema-type-by-input-type))
 
-(defn schema->input-type
-  "Looks up (m/type schema) in schema-type->input-type"
+(defn- extract-field-spec
+  "Produce a (partial) field spec from a schema by pulling keys with the
+  appropriate namespace out of its properties & unqualifying them, and
+  attempting to add the schema type based on [[schema-type->input-type]]."
+  {:malli/schema [:=> [:cat ::m/schema] ::field-spec]}
   [schema]
-  ((m/type schema) schema-type->input-type))
+  (let [input-type ((m/type schema) schema-type->input-type)]
+    (into (if input-type {:type input-type} {})
+          (keep (fn [[k v]]
+                  (when (= form-ns (namespace k))
+                    [(unqualify k) v])))
+          (m/properties schema))))
 
-
-
-(defn- copy-field-spec
-  "Extract a (partial) field spec from the properties of a schema by retrieving
-  the namespaced keys into non-namespaced ones"
-  {:malli/schema [:=> [:cat [:maybe :map]] ::field-spec]}
-  [props]
-  (reduce
-    (fn [out k]
-      (if-some [kv (find props k)]
-        (assoc out (unqualify (key kv)) (val kv))
-        out))
-    {} field-spec-properties-keys))
-
-(defn- default
-  "If `k` is not set in `m`, set it to `v`."
-  [m k v]
-  (if (some? (get m k)) m (assoc m k v)))
-
-(defmulti build-field-spec
-  "Build the components of a field spec that can be known for a particular
-  schema, including based on the field specs of its children"
-  (fn [schema _naive-field-spec _children]
+(defmulti
+  ^{:arglists '([schema naive-field-spec child-specs])}
+  complete-field-spec
+  "Complete or override a field spec for a particular schema. Basic field spec
+  as produced by [[extract-field-spec]] will be provided, as well as specs
+  already generated for children. Keyed on schema type.
+  Default action is to return the naive spec; only necessary to override when
+  child specs inform parent spec in some way, such as with `or`, `and`, etc."
+  (fn [schema _naive-field-spec _child-specs]
     (m/type schema)))
 
-(defmethod build-field-spec :default
-  [_schema spec _]
-  spec)
-  ;; best effort when no specific handling is to guess the type
-  ;(default spec :type (schema->input-type schema)))
+(defmethod complete-field-spec :default [_ spec _] spec)
+(comment
+  ;; among other things, default intentionally covers
+  :map 'map?  :map-of
+  'list? 'seqable? 'seq? 'sequential? :sequential
+  'vector? :vector :set 'set? 'coll?
+  'indexed? 'associative?
+  ;; TODO: evaluate strategy here
+  'empty? :tuple)
 
-(defmethod build-field-spec :or
+(defmethod complete-field-spec :or
   [_ spec child-specs]
   (into spec (intersect-maps child-specs)))
-(defmethod build-field-spec :and
+(defmethod complete-field-spec :and
   [_ spec child-specs]
   (into spec (intersect-maps child-specs)))
 
-(defmethod build-field-spec :maybe
+(defmethod complete-field-spec :maybe
   ;; any properties set explicitly on this schema, under those of child, and
   ;; set to required=false
   [_ spec [child-spec]]
   (-> (conj spec child-spec)
       (default :required false)))
-(defmethod build-field-spec ::m/val
-  [_ spec [child-spec]]
-  ;; any properties set explicitly on this schema, under those of child, and
-  ;; set to required=(not optional)
-  (conj spec child-spec))
-  ;(-> (conj spec child-spec)
-      ;(default :required  (not (:optional (m/properties schema))))))
 
-(defmethod build-field-spec ::m/schema
-  [_ _ [child-spec]]
-  ;; contains a ref to another schema - take unconditionally
-  child-spec)
-
-(defmethod build-field-spec :map
-  [_ spec _]
-  ;; Map children will render as fields, so they don't get integrated
-  spec)
-
-(defmethod build-field-spec 'map?
-  [_ spec _]
-  ;; Map children will render as fields, so they don't get integrated
-  spec)
-
-(defmethod build-field-spec :re
+(defmethod complete-field-spec :re
   [_ spec [child]]
   ;; TODO: figure out how to actually convert
   (assoc spec :pattern (str child)))
 
 ;; why though
-(defmethod build-field-spec 'nil?
+(defmethod complete-field-spec 'nil?
   [_ spec _]
   (assoc spec :type :text, :pattern "^$"))
 
-
 ;; TODO
-(defmethod build-field-spec :orn [_ _ _])
-(defmethod build-field-spec :andn [_ _ _])
-
-;; TODO: to implement
-(defmethod build-field-spec 'seqable? [_ _ _])
-(defmethod build-field-spec 'indexed? [_ _ _])
-(defmethod build-field-spec 'vector? [_ _ _])
-(defmethod build-field-spec :vector [_ _ _])
-(defmethod build-field-spec 'list? [_ _ _])
-(defmethod build-field-spec 'seq? [_ _ _])
-(defmethod build-field-spec :set [_ _ _])
-(defmethod build-field-spec 'set? [_ _ _])
-(defmethod build-field-spec 'coll? [_ _ _])
-(defmethod build-field-spec 'empty? [_ _ _])
-(defmethod build-field-spec 'associative? [_ _ _])
-(defmethod build-field-spec 'sequential? [_ _ _])
-(defmethod build-field-spec :sequential [_ _ _])
-(defmethod build-field-spec :tuple [_ _ _])
+(defmethod complete-field-spec :orn [_ _ _])
+(defmethod complete-field-spec :andn [_ _ _])
 
 ;;????????
 (comment
@@ -329,15 +323,6 @@
      ;empty?  ; TODO
      associative?
      :tuple})
-
-(defn- add-path-info
-  "Add name, id, and label to a spec, based on a path already added to it"
-  [spec]
-  (let [path (:path spec)
-        input-name (or (:name spec) (path->name path))]
-    (-> (assoc spec :name input-name)
-        (default :label   (path->label path))
-        (default :id      (str "mf-" input-name)))))
 
 (defn- mark-render
   "Mark a schema as rendering an input field"
@@ -378,20 +363,6 @@
 ;                             :yield-child true)}
 ;     (into [:tuple {::spec {:render? true}}] (map mark-render) children)]))
 
-(defn- recursive-deref
-  "Recursively actually deref schema. Must happen before walking, as otherwise
-  paths are difficult to recover. m/deref-all doesn't work."
-  [schema]
-  (m/walk schema
-          (m/schema-walker
-            (fn [subschema]
-              ;; TODO: others include :merge, :union, :select-keys
-              (if (#{::m/val ::m/schema :schema} (m/type subschema))
-                (first (m/children subschema))
-                subschema)))
-          #::m{:walk-schema-refs  true
-               :walk-refs         true}))
-
 (defn add-field-specs
   "Postwalk schema, calling `build-field-spec` with the schema, its properties,
   and the properties of its children, and adding the output to the schema
@@ -405,20 +376,19 @@
     (recursive-deref schema)
     (fn [schema path children _]
       ;(prn schema path children)
-      (let [schema-type (m/type schema)
-            input-type (schema-type->input-type schema-type)
-            children' (if (children-render schema-type)
+      (let [children' (if (children-render (m/type schema))
                         (map mark-render children)
                         children)
-            spec (build-field-spec
-                   schema
-                   (cond-> (copy-field-spec (m/properties schema))
-                     input-type (assoc :type input-type))
-                   (mapv #(when (m/schema? %)
-                            (::spec (m/properties %)))
-                         children'))]
+            spec (-> schema
+                     (complete-field-spec (extract-field-spec schema)
+                                          (mapv #(when (m/schema? %)
+                                                   (::spec (m/properties %)))
+                                                children))
+                     ;; add path after complete-field-spec in case of
+                     ;; accidental override from child specs
+                     (assoc :path path))]
         (-> schema
-            (mu/update-properties assoc ::spec (assoc spec :path path))
+            (mu/update-properties assoc ::spec spec)
             (set-children children'))))))
 
 (defn- props->attrs

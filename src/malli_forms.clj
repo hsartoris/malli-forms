@@ -285,7 +285,9 @@
   'vector? :vector :set 'set? 'coll?
   'indexed? 'associative?
   ;; TODO: evaluate strategy here
-  'empty? :tuple)
+  'empty? :tuple
+  ;; Not needed to cover :merge, :select-keys, :union, as they are derefed out
+  )
 
 (defmethod complete-field-spec :or
   [_ spec child-specs]
@@ -321,10 +323,7 @@
   :*
   :repeat
   :cat
-  :catn
-  :merge
-  :union
-  :select-keys)
+  :catn)
 
 ;; TODO: some of these imply multivalued; others specific, separable fields
 (def children-render

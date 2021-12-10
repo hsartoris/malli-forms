@@ -43,6 +43,7 @@
    ::attributes   [:map-of :keyword :any]
    ::render?      [boolean?
                    {:doc "When true, this field spec should be preserved as it is ready to render"}]
+   ::path         [:sequential :any]
    ::field-spec.partial (into [:map {:doc "What a field spec will look like
                                           when one or more fields is defined in
                                           the properties of a schema"}]
@@ -352,7 +353,9 @@
          [k props
           (mu/update-properties cschema update ::spec
                                 #(-> (add-path-info %)
-                                     (assoc :required (not (:optional props)))
+                                     (assoc :required (not (:optional props))
+                                            ;; TODO
+                                            :default (:default props))
                                      (default :render? true)))])
        (m/-set-children schema)))
 
@@ -365,11 +368,7 @@
    (add-field-specs schema {:registry registry}))
   ([schema options]
    (let [schema (m/schema schema options)
-         base-path (case (m/type schema)
-                     ;; TODO: actually the same for :schema?
-                     (::m/schema :schema) [(m/form schema)]
-                     :ref (m/children schema) ;; only one
-                     [])]
+         base-path (if (m/-ref-schema? schema) [(m/-ref schema)] [])]
      (m/walk
        (deref-subschemas schema options)
        (fn [schema path children _]
@@ -406,10 +405,11 @@
     markup))
 
 (defn- labeled-input
-  [{:keys [id label] :as field-spec} value]
-  (add-label
-    [:input (props->attrs field-spec value)]
-    label id))
+  ([spec] (labeled-input spec (:value spec))) ;; TODO
+  ([{:keys [id label] :as field-spec} value]
+   (add-label
+     [:input (props->attrs field-spec value)]
+     label id)))
 
 (defmulti render-field
   "Renders a field, keyed on `(:type field-spec)`"
@@ -443,9 +443,11 @@
   {:name            :collect-specs
    :default-encoder {:compile (fn [schema _]
                                 (let [spec (::spec (m/properties schema))]
-                                  (fn [value]
-                                    (cond-> spec (some? value) (assoc :value value)))))}
-   :encoders  {:map {:copmile (fn [schema _]
+                                  (when (and (:render? spec)
+                                             (not (children-render (m/type schema))))
+                                    (fn [value]
+                                      (cond-> spec (some? value) (assoc :value value))))))}
+   :encoders  {:map {:compile (fn [schema _]
                                 (let [child-keys (map #(nth % 0) (m/children schema))]
                                   {;; on enter, ensure placeholder values are present, as
                                    ;; otherwise transform doesn't recurse to  them
@@ -453,13 +455,56 @@
                                             (if (or (nil? value) (map? value))
                                               (reduce #(update %1 %2 identity) value child-keys)
                                               value))
-                                   ;; collect 
+                                   ;; collect child specs, which are now in the vals
                                    :leave (fn [value]
-                                            ;; preserve order
-                                            (into [:fieldset]
-                                                  (comp (map value)
-                                                        (interpose [:br]))
-                                                  child-keys))}))}
+                                            (if (map? value)
+                                              ;; preserve order
+                                              (map value child-keys)
+                                              value))}))}
+               :map-of {:enter #(or % {nil nil})
+                        :leave seq}}})
+
+
+;(def render-fields
+;  "It's very important that the functions here are on :leave, not :enter."
+;  {:name :render-fields
+;   :default-encoder {:compile (fn [schema _]
+;                                {:leave 
+;                                 (let [spec (::spec (m/properties schema))]
+;                                   (when (and (:render? spec)
+;                                              (not (children-render (m/type schema))))
+;                                     (partial labeled-input spec)))})}
+;   :encoders {:map {:leave (fn [child-specs]
+;                             (into [:fieldset] (interpose [:br]) child-specs))}
+;              :map-of {:compile (fn [schema _]
+;                                  (let [path (-> schema m/properties ::spec :path)]
+;                                    {:leave (fn [pair-specs]
+;                                              [:fieldset
+;                                               [:legend (path->label path)]
+;                                               (map #(vector :fieldset %) pair-specs)])}))}}})
+
+
+
+(defn- should-render?
+  ;; TODO
+  [schema]
+  (and (:render? (::spec (m/properties schema)))
+       (not (children-render (m/type schema)))))
+
+(defn- collection-schema-transformer
+  [empty-val add-nil?]
+  {:compile (fn [schema _]
+              (let [path (-> schema m/properties ::spec :path)]
+                {:enter (fn [value]
+                          (if (nil? value)
+                            empty-val
+                            (if add-nil?
+                              (conj value nil)
+                              value)))
+                 :leave (fn [value]
+                          [:fieldset
+                           [:legend (path->label path)]
+                           (seq value)])}))})
 
 (def render-fields
   "Transformer that renders field specs into hiccup markup"
@@ -469,12 +514,16 @@
    ;; can actually override by settings {:encode/render-field {:compile (fn [schema _] ....
    ;; on schema
    :default-encoder {:compile (fn [schema _]
-                                (let [spec (::spec (m/properties schema))]
-                                  ;(if (:render? 
-                                  (cond
-                                    (:render? spec)     (fn [v] (render-field schema v))
-                                    (:yield-child spec) (fn [v] v))))}
-   :encoders {:map  {:compile (fn [schema _]
+                                ;; TODO: parameterize probably
+                                (let [default-kv (find (m/properties schema) :default)]
+                                  (cond-> nil
+                                    default-kv
+                                    (assoc :enter (fn [value]
+                                                    (if (nil? value) (val default-kv) value)))
+                                    (should-render? schema) 
+                                    (assoc :leave (fn [value] (render-field schema value))))))}
+   :encoders {:set  (collection-schema-transformer #{nil} true)
+              :map  {:compile (fn [schema _]
                                 (let [child-keys (map #(nth % 0) (m/children schema))]
                                   {:enter (fn [value]
                                             ;; if child keys aren't present, transform doesn't recurse to them
@@ -483,25 +532,18 @@
                                               value))
                                    :leave (fn [value]
                                             ;; preserve order
-                                            (into [:fieldset]
-                                                  (comp (map value)
-                                                        (interpose [:br]))
-                                                  child-keys))}))}
-                                            ;[:fieldset
-                                             
-                                            ;(map value child-keys))}))}
+                                            ;; things like (interpost [:br]) need to happen during actual render
+                                            (into [:fieldset] (map value) child-keys))}))}
               :map-of {:compile (fn [schema _]
                                   (prn schema)
-                                  (let [render?  (-> schema m/properties ::spec :render?)
-                                        ;; TODO
+                                  (let [;; TODO
                                         path (-> schema m/properties ::spec :path)]
                                     {:enter #(or % {nil nil})
-                                     :leave (fn [value]
-                                              (if render?
+                                     :leave (when (should-render? schema)
+                                              (fn [value]
                                                 [:fieldset
                                                  [:legend (path->label path)]
-                                                 (map #(cons :fieldset %) value)]
-                                                value))}))}
+                                                 (map #(cons :fieldset %) value)]))}))}
               ;; ok tuple is borked good
               ;:tuple {:compile (fn [schema _]
               ;                   (let [len (count (m/children schema))
@@ -521,9 +563,11 @@
 
 (defn encode-fields
   "Encode the fields of a form from a schema, with an optional object"
-  [schema source]
-  (-> (add-field-specs schema)
-      (m/encode source (mt/transformer render-fields))))
+  ([schema] (encode-fields schema nil))
+  ([schema source] (encode-fields schema source {}))
+  ([schema source options]
+   (-> (add-field-specs schema options)
+       (m/encode source options (mt/transformer render-fields)))))
 
 (def form-props-schema
   "Attributes map that may be defined in the top level field of a schema"

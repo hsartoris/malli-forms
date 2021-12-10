@@ -56,7 +56,7 @@
                    [:attributes ::attributes]
                    [:render?  {:optional true} ::render?]]})
 
-(def ^:private registry
+(def registry
   "malli registry for this project"
   (merge (m/default-schemas)
          (mu/schemas)
@@ -364,30 +364,32 @@
    ;; TODO: remove when not doing active dev
    (add-field-specs schema {:registry registry}))
   ([schema options]
-   ;; TODO: use schema to define base path, where possible
-   ;; i.e., if it's a ::m/schema or a keyword, use the type as the root
-   ;; this would allow for better names/labels/legends etc
-   ;(let [base-path (
-   (prn schema)
-   (m/walk
-     (deref-subschemas schema options)
-     (fn [schema path children _]
-       ;(prn schema path children)
-       (let [children' (if (children-render (m/type schema))
-                         (map mark-render children)
-                         children)
-             spec (-> schema
-                      (complete-field-spec (extract-field-spec schema)
-                                           (mapv #(when (m/schema? %)
-                                                    (::spec (m/properties %)))
-                                                 children))
-                      ;; add path after complete-field-spec in case of
-                      ;; accidental override from child specs
-                      (assoc :path path))]
-         (-> schema
-             (mu/update-properties assoc ::spec spec)
-             (set-children children'))))
-     options)))
+   (let [schema (m/schema schema options)
+         base-path (case (m/type schema)
+                     ;; TODO: actually the same for :schema?
+                     (::m/schema :schema) [(m/form schema)]
+                     :ref (m/children schema) ;; only one
+                     [])]
+     (m/walk
+       (deref-subschemas schema options)
+       (fn [schema path children _]
+         ;(prn schema path children)
+         (let [path (into base-path path)
+               children' (if (children-render (m/type schema))
+                           (map mark-render children)
+                           children)
+               spec (-> schema
+                        (complete-field-spec (extract-field-spec schema)
+                                             (mapv #(when (m/schema? %)
+                                                      (::spec (m/properties %)))
+                                                   children))
+                        ;; add path after complete-field-spec in case of
+                        ;; accidental override from child specs
+                        (assoc :path path))]
+           (-> schema
+               (mu/update-properties assoc ::spec spec)
+               (set-children children'))))
+       options))))
 
 (defn- props->attrs
   "Convert field spec from a schema into an attribute map for an input"
@@ -436,6 +438,29 @@
           (value->label cval)])]
       label id)))
 
+(def collect-specs
+  "Transformer that collects field specs based on input value."
+  {:name            :collect-specs
+   :default-encoder {:compile (fn [schema _]
+                                (let [spec (::spec (m/properties schema))]
+                                  (fn [value]
+                                    (cond-> spec (some? value) (assoc :value value)))))}
+   :encoders  {:map {:copmile (fn [schema _]
+                                (let [child-keys (map #(nth % 0) (m/children schema))]
+                                  {;; on enter, ensure placeholder values are present, as
+                                   ;; otherwise transform doesn't recurse to  them
+                                   :enter (fn [value]
+                                            (if (or (nil? value) (map? value))
+                                              (reduce #(update %1 %2 identity) value child-keys)
+                                              value))
+                                   ;; collect 
+                                   :leave (fn [value]
+                                            ;; preserve order
+                                            (into [:fieldset]
+                                                  (comp (map value)
+                                                        (interpose [:br]))
+                                                  child-keys))}))}
+
 (def render-fields
   "Transformer that renders field specs into hiccup markup"
   ;(let [render-
@@ -445,6 +470,7 @@
    ;; on schema
    :default-encoder {:compile (fn [schema _]
                                 (let [spec (::spec (m/properties schema))]
+                                  ;(if (:render? 
                                   (cond
                                     (:render? spec)     (fn [v] (render-field schema v))
                                     (:yield-child spec) (fn [v] v))))}

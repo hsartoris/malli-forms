@@ -24,6 +24,11 @@
    ;; TODO: will/should this appear?
    ::render?])
 
+(comment
+  (def s1 [:map [:a string?] [:b int?]])
+  (def s2 [:merge s1 ::field-spec])
+  (def s3 [:select-keys s1 [:a]]))
+
 (def ^:private static-registry
   {::type         [:enum :number :text
                    ;; TODO
@@ -45,7 +50,7 @@
                               (map #(vector % {:optional true}))
                               field-spec-properties-keys)
    ::field-spec   [:map 
-                   [:name     ::name]
+                   [:name     [:ref ::name]]
                    [:label    {:optional true} ::label]
                    [:id       ::id]
                    [:type     {:optional true} ::type]
@@ -99,20 +104,31 @@
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
 
-(defn- recursive-deref
-  "Recursively actually deref schema; i.e., replace schemas that are references
-  to others with those others. Must happen before walking, as otherwise
-  paths are difficult to recover. m/deref-all doesn't work."
-  [schema]
-  (m/walk schema
-          (m/schema-walker
-            (fn [subschema]
-              ;; TODO: others include :merge, :union, :select-keys
-              (if (#{::m/val ::m/schema :schema} (m/type subschema))
-                (first (m/children subschema))
-                subschema)))
-          #::m{:walk-schema-refs  true
-               :walk-refs         true}))
+(defn deref-subschemas
+  "Walk schema derefing subchemas; i.e., replace schemas that are references
+  to others with those others. Must happen before walking, as otherwise paths
+  are difficult to recover. Not the same as m/deref-all.
+  Note that this is not fully recursive in that, though it fully descends and
+  derefs subschemas in the original, it will not chase emitted refs any further
+  than m/walk does."
+  ([schema] (deref-subschemas schema {}))
+  ([schema options]
+   (m/walk schema
+           (fn [schema _ children _]
+             (let [;; can't call immediately as select-keys will break
+                   simple #(m/-set-children schema children)]
+               (case (m/type schema)
+                 (::m/val ::m/schema :schema :ref) (first children)
+                 (:merge :union) (m/deref (simple))
+                 ;; needs special handling as long as upstream is broken
+                 :select-keys (-> schema
+                                  (m/-set-children [(first children) (last (m/children schema))])
+                                  m/deref)
+                 (simple))))
+           (assoc options
+                  ::m/walk-entry-vals   false
+                  ::m/walk-schema-refs  true
+                  ::m/walk-refs         true))))
 
 ;; ------ name/label handling ------
 
@@ -332,9 +348,10 @@
 (defmulti set-children
   "Called by the walker in add-field-specs to update the child schemas on a
   parent.
-  Default is to replace existing children with provided (i.e., postwalked).
+  Default is to replace existing children with provided (i.e., postwalked),
+  and marked as rendering where parent is in children-render.
   Override in situations where parent schema needs to modify child properties,
-  such as a map."
+  such as :map, and simply marking the direct child as rendering isn't enough."
   (fn [schema _children]
     (m/type schema)))
 
@@ -352,17 +369,6 @@
                                      (default :render? true)))])
        (m/-set-children schema)))
 
-;(defmethod set-children :map-of
-;  [schema children]
-;  ;; is this a terrible idea?
-;  (m/schema
-;    ;; technically less restrictive, but w/e
-;    [:set {::original schema
-;           ::spec     (assoc (::spec (m/properties schema))
-;                             :render? false
-;                             :yield-child true)}
-;     (into [:tuple {::spec {:render? true}}] (map mark-render) children)]))
-
 (defn add-field-specs
   "Postwalk schema, calling `build-field-spec` with the schema, its properties,
   and the properties of its children, and adding the output to the schema
@@ -373,7 +379,7 @@
   ;; this would allow for better names/labels/legends etc
   ;(let [base-path (
   (m/walk
-    (recursive-deref schema)
+    (deref-subschemas schema)
     (fn [schema path children _]
       ;(prn schema path children)
       (let [children' (if (children-render (m/type schema))

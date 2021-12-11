@@ -245,11 +245,13 @@
 (defn- extract-field-spec
   "Produce a (partial) field spec from a schema by pulling keys with the
   appropriate namespace out of its properties & unqualifying them, and
-  attempting to add the schema type based on [[schema-type->input-type]]."
+  attempting to add the schema type based on [[schema-type->input-type]].
+  Defaults to required=true"
   {:malli/schema [:=> [:cat ::m/schema] ::field-spec]}
   [schema]
   (let [input-type ((m/type schema) schema-type->input-type)]
-    (into (if input-type {:type input-type} {})
+    (into (cond-> {:required true}
+            input-type (assoc :type input-type))
           (keep (fn [[k v]]
                   (when (= form-ns (namespace k))
                     [(unqualify k) v])))
@@ -290,7 +292,7 @@
   ;; set to required=false
   [_ spec [child-spec]]
   (-> (conj spec child-spec)
-      (default :required false)))
+      (assoc :required false)))
 
 (defmethod complete-field-spec :re
   [_ spec [child]]
@@ -318,7 +320,7 @@
 (def children-render
   "Children of schemas of these types should render as distinct inputs"
   '#{;; needs special handling
-     ;:map
+     :map
      :map-of ;TODO
      coll?
      :vector vector?
@@ -331,7 +333,13 @@
 (defn- mark-render
   "Mark a schema as rendering an input field"
   [schema]
-  (mu/update-properties schema update ::spec #(add-path-info (assoc % :render? true))))
+  (if (m/schema? schema)
+    (mu/update-properties schema update ::spec
+                          #(-> %
+                               ;; unless renders children, mark as render
+                               (assoc :render? (not (children-render (m/type schema))))
+                               add-path-info))
+    schema))
 
 (defmulti set-children
   "Called by the walker in add-field-specs to update the child schemas on a
@@ -355,8 +363,8 @@
                                 #(-> (add-path-info %)
                                      (assoc :required (not (:optional props))
                                             ;; TODO
-                                            :default (:default props))
-                                     (default :render? true)))])
+                                            :default (:default props)
+                                            :render? (not (children-render (m/type cschema))))))])
        (m/-set-children schema)))
 
 (defn add-field-specs
@@ -373,10 +381,12 @@
        (deref-subschemas schema options)
        (fn [schema path children _]
          ;(prn schema path children)
-         (let [path (into base-path path)
-               children' (if (children-render (m/type schema))
+         (let [children-render? (children-render (m/type schema))
+               children' (if children-render?
                            (map mark-render children)
                            children)
+               ;; root node without rendering children renders
+               render? (and (empty? path) (not children-render?))
                spec (-> schema
                         (complete-field-spec (extract-field-spec schema)
                                              (mapv #(when (m/schema? %)
@@ -384,7 +394,10 @@
                                                    children))
                         ;; add path after complete-field-spec in case of
                         ;; accidental override from child specs
-                        (assoc :path path))]
+                        (assoc :path (into base-path path))
+                        (update :render? #(or % render?))
+                        (cond->
+                          render? add-path-info))]
            (-> schema
                (mu/update-properties assoc ::spec spec)
                (set-children children'))))
@@ -428,14 +441,15 @@
     (add-label
       [:select (props->attrs props nil)
        (for [child (m/children schema)
-             :let [cval (if (keyword? child)
-                          (subs (str child) 1)
-                          (str child))
-                   sel? (= cval value)]]
+             ;; TODO: leave stringification up to generator?
+             :let [str-val (if (keyword? child)
+                             (subs (str child) 1)
+                             (str child))
+                   sel? (= child value)]]
          [:option
-          (cond-> {:value cval}
+          (cond-> {:value str-val}
             sel? (assoc :selected true))
-          (value->label cval)])]
+          (value->label str-val)])]
       label id)))
 
 (def collect-specs
@@ -484,13 +498,6 @@
 ;                                               (map #(vector :fieldset %) pair-specs)])}))}}})
 
 
-
-(defn- should-render?
-  ;; TODO
-  [schema]
-  (and (:render? (::spec (m/properties schema)))
-       (not (children-render (m/type schema)))))
-
 (defn- collection-schema-transformer
   [empty-val add-nil?]
   {:compile (fn [schema _]
@@ -515,12 +522,14 @@
    ;; on schema
    :default-encoder {:compile (fn [schema _]
                                 ;; TODO: parameterize probably
-                                (let [default-kv (find (m/properties schema) :default)]
+                                ;; maybe store val props in special key on child?
+                                (let [props (m/properties schema)
+                                      default-kv (find props :default)]
                                   (cond-> nil
                                     default-kv
                                     (assoc :enter (fn [value]
                                                     (if (nil? value) (val default-kv) value)))
-                                    (should-render? schema) 
+                                    (:render? (::spec props))
                                     (assoc :leave (fn [value] (render-field schema value))))))}
    :encoders {:set  (collection-schema-transformer #{nil} true)
               :map  {:compile (fn [schema _]
@@ -536,13 +545,12 @@
                                             (into [:fieldset] (map value) child-keys))}))}
               :map-of {:compile (fn [schema _]
                                   (prn schema)
-                                  (let [;; TODO
-                                        path (-> schema m/properties ::spec :path)]
+                                  (let [spec (::spec (m/properties schema))]
                                     {:enter #(or % {nil nil})
-                                     :leave (when (should-render? schema)
+                                     :leave (when (:render? spec)
                                               (fn [value]
                                                 [:fieldset
-                                                 [:legend (path->label path)]
+                                                 [:legend (path->label (:path spec))]
                                                  (map #(cons :fieldset %) value)]))}))}
               ;; ok tuple is borked good
               ;:tuple {:compile (fn [schema _]

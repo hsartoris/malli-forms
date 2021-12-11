@@ -18,6 +18,7 @@
 
 (def ex-schema
   "Schema for https://medium.com/@kirill.ishanov/building-forms-with-re-frame-and-clojure-spec-6cf1df8a114d"
+  ;; TODO: set isn't rendering appropriately here
   [:map {:closed true
          :registry {::range [:map {:closed true}
                              [:first  [:int {:min 1, :max 65536}]]

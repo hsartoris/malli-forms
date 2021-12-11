@@ -106,6 +106,7 @@
            (fn [schema _ children _]
              (let [;; can't call immediately as select-keys will break
                    simple #(m/-set-children schema children)]
+               ;; TODO: keep track of the ref on the child schema for labeling
                (case (m/type schema)
                  (::m/val ::m/schema :schema :ref) (first children)
                  (:merge :union) (m/deref (simple))
@@ -319,6 +320,10 @@
   [_ _ _]
   {:no-spec true})
 
+(defmethod complete-field-spec :enum
+  [_ spec _]
+  (assoc spec :type :select))
+
 ;; TODO
 (defmethod complete-field-spec :orn [_ _ _])
 (defmethod complete-field-spec :andn [_ _ _])
@@ -398,6 +403,7 @@
        (fn [schema path children _]
          ;(prn schema path children)
          (let [naive-spec (extract-field-spec schema)
+               ;; TODO: add schema type under ::m/type field here?
                spec (-> (complete-field-spec
                           schema naive-spec
                           (keep #(when (m/schema? %)
@@ -409,9 +415,12 @@
                         (assoc :path (into base-path path)))
                children-render? (= ::collection (:type spec))
                ;; root node without rendering children renders
-               spec (if (and (empty? path) (not children-render?))
-                      (-> spec (assoc :render? true) add-path-info)
-                      spec)]
+               spec (cond-> spec
+                      (and (empty? path) (not children-render?))
+                      (-> (assoc :render? true) add-path-info)
+                      
+                      (m/-ref-schema? schema)
+                      (assoc ::m/name (m/-ref schema)))]
            (-> schema
                (mu/update-properties assoc ::spec spec)
                (set-children
@@ -469,17 +478,41 @@
           (value->label str-val)])]
       label id)))
 
+(defn- collection-schema-collector
+  [empty-val add-nil?]
+  {:compile (fn [schema _]
+              (let [spec (::spec (m/properties schema))]
+                {:enter (fn [value]
+                          (if (nil? value)
+                            empty-val
+                            (if add-nil?
+                              (conj value nil)
+                              value)))
+                 :leave (fn [value]
+                          (prn (m/type schema) spec value)
+                          (assoc spec :children (seq value)))}))})
+
 (def collect-specs
   "Transformer that collects field specs based on input value."
   {:name            :collect-specs
    :default-encoder {:compile (fn [schema _]
-                                (let [spec (::spec (m/properties schema))]
-                                  (when (and (:render? spec)
-                                             (not (children-render (m/type schema))))
-                                    (fn [value]
-                                      (cond-> spec (some? value) (assoc :value value))))))}
+                                ;; TODO: parameterize probably
+                                ;; maybe store val props in special key on child?
+                                (let [props (m/properties schema)
+                                      spec (::spec props)
+                                      default-kv (find props :default)]
+                                  (cond-> nil
+                                    default-kv
+                                    (assoc :enter (fn [value]
+                                                    (if (nil? value) (val default-kv) value)))
+                                    (:render? spec)
+                                    (assoc :leave
+                                           (fn [value] 
+                                             (assoc spec :value value))))))}
+                                             ;(render-field schema value))))))}
    :encoders  {:map {:compile (fn [schema _]
-                                (let [child-keys (map #(nth % 0) (m/children schema))]
+                                (let [child-keys (map #(nth % 0) (m/children schema))
+                                      spec (::spec (m/properties schema))]
                                   {;; on enter, ensure placeholder values are present, as
                                    ;; otherwise transform doesn't recurse to  them
                                    :enter (fn [value]
@@ -491,10 +524,20 @@
                                             (if (map? value)
                                               ;; preserve order
                                               ;; TODO: custom order via attributes
-                                              (map value child-keys)
+                                              (assoc spec :children (map value child-keys))
+                                              ;; TODO: then what?
                                               value))}))}
-               :map-of {:enter #(or % {nil nil})
-                        :leave seq}}})
+               :map-of  (collection-schema-collector {nil nil} false)
+               :set     (collection-schema-collector #{nil} true)}})
+
+(defn collect-field-specs
+  "Given a schema, a value, and options, prepare the schema via add-field-specs,
+  then encode it with collect-specs into a renderable AST"
+  ([schema] (collect-field-specs schema nil))
+  ([schema source] (collect-field-specs schema source {}))
+  ([schema source options]
+   (-> (add-field-specs schema options)
+       (m/encode source options (mt/transformer collect-specs)))))
 
 
 ;(def render-fields

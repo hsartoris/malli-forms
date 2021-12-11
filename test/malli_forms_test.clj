@@ -31,17 +31,32 @@
                            :id        "mf-root"}}
           [:< {::mf/spec {:path     [0]
                           :required true
-                          :render?  false
                           :type     :number}}
            4]
           [:> {::mf/spec {:path     [1]
                           :required true
-                          :render?  false
                           :type     :number}}
            0]]
          (-> [:and [:< 4] [:> 0]]
              mf/add-field-specs
-             m/form))))
+             m/form)))
+  (is (= [:and {::mf/spec {:path      []
+                           :type      :number
+                           :required  true
+                           :render?   true
+                           :name      "root"
+                           :label     nil
+                           :id        "mf-root"}}
+          [:< {::mf/spec {:path     [0]
+                          :required true
+                          :type     :number}}
+           4]
+          [:fn {::mf/spec {:no-spec true
+                           :path    [1]}} nat-int?]] ;; ignore that this is a schema too - just a common reference function
+         (-> [:and [:< 4] [:fn nat-int?]]
+             mf/add-field-specs
+             m/form))
+      "Function schema under and should not contribute to resulting spec"))
 
 (deftest single-input-test
   (is (= [:input {:id       "mf-root"

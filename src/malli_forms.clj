@@ -150,6 +150,8 @@
 (defn munge-name-part
   "Munge a part of a field name into an HTML-compatible string"
   [s]
+  ;; TODO: set - special behavior?
+  ;(= ::m/in s) ""
   (if (ident? s)
     (munge-name-part (subs (str s) 1))
     (str/replace s munge-re name-substring-replacements)))
@@ -232,7 +234,16 @@
                rational?
                ratio?
                :> :>= :< :<=
-               :int :double]})
+               :int :double]
+    ;; fake input type that includes schema types that may have (many) children
+    ;; intentionally does not include predicate schemas, as they cannot have children
+    ::collection [:map :map-of
+                  :sequential :vector :set
+                  :tuple ;; TODO
+                  ;; really big TODO
+                  :+ :*
+                  :repeat
+                  :cat :catn]})
 
 (def schema-type->input-type
   "Simple mapping from schema type to HTML form input type"
@@ -271,12 +282,12 @@
 (defmethod complete-field-spec :default [_ spec _] spec)
 (comment
   ;; among other things, default intentionally covers
-  :map 'map?  :map-of
+  #{ :map 'map?  :map-of
   'list? 'seqable? 'seq? 'sequential? :sequential
   'vector? :vector :set 'set? 'coll?
   'indexed? 'associative?
   ;; TODO: evaluate strategy here
-  'empty? :tuple
+  'empty? :tuple}
   ;; Not needed to cover :merge, :select-keys, :union, as they are derefed out
   )
 
@@ -304,6 +315,10 @@
   [_ spec _]
   (assoc spec :type :text, :pattern "^$"))
 
+(defmethod complete-field-spec :fn
+  [_ _ _]
+  {:no-spec true})
+
 ;; TODO
 (defmethod complete-field-spec :orn [_ _ _])
 (defmethod complete-field-spec :andn [_ _ _])
@@ -319,16 +334,17 @@
 ;; TODO: some of these imply multivalued; others specific, separable fields
 (def children-render
   "Children of schemas of these types should render as distinct inputs"
-  '#{;; needs special handling
-     :map
-     :map-of ;TODO
-     coll?
-     :vector vector?
-     :set set?
-     :sequential sequential? seqable? seq? list?
-     ;empty?  ; TODO
-     associative?
-     :tuple})
+  (set (::collection schema-type-by-input-type)))
+  ;'#{;; needs special handling
+  ;   :map
+  ;   :map-of ;TODO
+  ;   coll?
+  ;   :vector vector?
+  ;   :set set?
+  ;   :sequential sequential? seqable? seq? list?
+  ;   ;empty?  ; TODO
+  ;   associative?
+  ;   :tuple})
 
 (defn- mark-render
   "Mark a schema as rendering an input field"
@@ -381,26 +397,27 @@
        (deref-subschemas schema options)
        (fn [schema path children _]
          ;(prn schema path children)
-         (let [children-render? (children-render (m/type schema))
-               children' (if children-render?
-                           (map mark-render children)
-                           children)
-               ;; root node without rendering children renders
-               render? (and (empty? path) (not children-render?))
-               spec (-> schema
-                        (complete-field-spec (extract-field-spec schema)
-                                             (mapv #(when (m/schema? %)
-                                                      (::spec (m/properties %)))
-                                                   children))
+         (let [naive-spec (extract-field-spec schema)
+               spec (-> (complete-field-spec
+                          schema naive-spec
+                          (keep #(when (m/schema? %)
+                                   (let [spec (::spec (m/properties %))]
+                                     (when-not (:no-spec spec) spec)))
+                                children))
                         ;; add path after complete-field-spec in case of
                         ;; accidental override from child specs
-                        (assoc :path (into base-path path))
-                        (update :render? #(or % render?))
-                        (cond->
-                          render? add-path-info))]
+                        (assoc :path (into base-path path)))
+               children-render? (= ::collection (:type spec))
+               ;; root node without rendering children renders
+               spec (if (and (empty? path) (not children-render?))
+                      (-> spec (assoc :render? true) add-path-info)
+                      spec)]
            (-> schema
                (mu/update-properties assoc ::spec spec)
-               (set-children children'))))
+               (set-children
+                 (if children-render?
+                   (map mark-render children)
+                   children)))))
        options))))
 
 (defn- props->attrs
@@ -473,6 +490,7 @@
                                    :leave (fn [value]
                                             (if (map? value)
                                               ;; preserve order
+                                              ;; TODO: custom order via attributes
                                               (map value child-keys)
                                               value))}))}
                :map-of {:enter #(or % {nil nil})

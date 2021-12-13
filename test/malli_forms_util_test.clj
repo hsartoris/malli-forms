@@ -12,6 +12,8 @@
 (deftest deref-subschemas-test
   (testing "Special cases"
     (is (= '[:map
+             ;; name preservation is only best-effort - merge makes it less useful
+             {::mf/spec {::m/name ::map-b}}
              [:x string?]
              [:y int?]
              [:a :any]]
@@ -26,13 +28,16 @@
                (mf/deref-subschemas {:registry registry})
                m/form))
         "select-keys is derefed, with second child preserved")
-    (is (= '[:maybe [:tuple
-                     [:= :ping]
-                     [:maybe [:tuple
-                              [:= :pong]
-                              [:maybe [:tuple
-                                       [:= :ping]
-                                       ::pong]]]]]]
+    (is (= '[:maybe {::mf/spec {::m/name ::ping}}
+             [:tuple
+              [:= :ping]
+              [:maybe {::mf/spec {::m/name ::pong}}
+               [:tuple
+                [:= :pong]
+                [:maybe {::mf/spec {::m/name ::ping}}
+                 [:tuple
+                  [:= :ping]
+                  ::pong]]]]]]
            (-> [:schema {:registry {::ping [:maybe [:tuple
                                                     [:= :ping]
                                                     [:ref ::pong]]]

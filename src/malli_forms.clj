@@ -104,11 +104,18 @@
   ([schema options]
    (m/walk schema
            (fn [schema _ children _]
+             ;(prn schema children)
              (let [;; can't call immediately as select-keys will break
                    simple #(m/-set-children schema children)]
                ;; TODO: keep track of the ref on the child schema for labeling
                (case (m/type schema)
-                 (::m/val ::m/schema :schema :ref) (first children)
+                 :schema (first children)
+
+                 (::m/val ::m/schema :ref)
+                 (let [child (first children)]
+                   (cond-> child ;; some will have keywords etc as first child
+                     (m/schema? child)
+                     (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema))))
                  (:merge :union) (m/deref (simple))
                  ;; needs special handling as long as upstream is broken
                  :select-keys (-> schema
@@ -356,8 +363,7 @@
   [schema]
   (if (m/schema? schema)
     (mu/update-properties schema update ::spec
-                          #(-> %
-                               ;; unless renders children, mark as render
+                          #(-> % ;; unless renders children, mark as render
                                (assoc :render? (not (children-render (m/type schema))))
                                add-path-info))
     schema))
@@ -417,10 +423,7 @@
                ;; root node without rendering children renders
                spec (cond-> spec
                       (and (empty? path) (not children-render?))
-                      (-> (assoc :render? true) add-path-info)
-                      
-                      (m/-ref-schema? schema)
-                      (assoc ::m/name (m/-ref schema)))]
+                      (-> (assoc :render? true) add-path-info))]
            (-> schema
                (mu/update-properties assoc ::spec spec)
                (set-children
@@ -478,6 +481,7 @@
           (value->label str-val)])]
       label id)))
 
+;; TODO: use some kind of identifiable value like ::placeholder for placeholders
 (defn- collection-schema-collector
   [empty-val add-nil?]
   {:compile (fn [schema _]

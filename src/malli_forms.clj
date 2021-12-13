@@ -483,18 +483,19 @@
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholders
 (defn- collection-schema-collector
-  [empty-val add-nil?]
-  {:compile (fn [schema _]
-              (let [spec (::spec (m/properties schema))]
-                {:enter (fn [value]
-                          (if (nil? value)
-                            empty-val
-                            (if add-nil?
-                              (conj value nil)
-                              value)))
-                 :leave (fn [value]
-                          (prn (m/type schema) spec value)
-                          (assoc spec :children (seq value)))}))})
+  ([empty-val] (collection-schema-collector empty-val nil))
+  ([empty-val placeholder]
+   {:compile (fn [schema _]
+               (let [spec (::spec (m/properties schema))]
+                 {:enter (fn [value]
+                           (let [value (if (nil? value) empty-val value)]
+                             (cond
+                               (fn? placeholder) (placeholder value)
+                               (some? placeholder) (conj value placeholder)
+                               :else value)))
+                  :leave (fn [value]
+                           (prn (m/type schema) spec value)
+                           (assoc spec :children (seq value)))}))}))
 
 (def collect-specs
   "Transformer that collects field specs based on input value."
@@ -531,8 +532,8 @@
                                               (assoc spec :children (map value child-keys))
                                               ;; TODO: then what?
                                               value))}))}
-               :map-of  (collection-schema-collector {nil nil} false)
-               :set     (collection-schema-collector #{nil} true)}})
+               :map-of  (collection-schema-collector {} #(assoc % nil nil))
+               :set     (collection-schema-collector #{} #(conj % nil))}})
 
 (defn collect-field-specs
   "Given a schema, a value, and options, prepare the schema via add-field-specs,

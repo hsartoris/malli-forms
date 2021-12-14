@@ -12,8 +12,6 @@
 (deftest deref-subschemas-test
   (testing "Special cases"
     (is (= '[:map
-             ;; name preservation is only best-effort - merge makes it less useful
-             {::mf/spec {::m/name ::map-b}}
              [:x string?]
              [:y int?]
              [:a :any]]
@@ -37,7 +35,7 @@
                 [:maybe {::mf/spec {::m/name ::ping}}
                  [:tuple
                   [:= :ping]
-                  ::pong]]]]]]
+                  [:ref ::pong]]]]]]]
            (-> [:schema {:registry {::ping [:maybe [:tuple
                                                     [:= :ping]
                                                     [:ref ::pong]]]
@@ -51,3 +49,10 @@
         a maybe ping, which has already been derefed and is replaced with a
         tuple with a maybe pong, which doesn't get derefed for reasons I don't
         fully understand.")))
+
+;(deftest add-field-spec-test
+(comment
+  (mf/add-field-specs
+    [:schema {:registry {::a string?
+                         ::s [:set [:ref ::a]]}}
+     [:map [:s [:ref ::s]]]]))

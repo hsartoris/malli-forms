@@ -118,6 +118,35 @@
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
 
+(def deref-walker
+  "Walker that derefs subschemas a la deref-subschemas"
+  (reify m/Walker
+    (-accept [_ s _ _] s) ;; same as m/walk
+    (-inner [this s p options]
+      (let [stype (m/type s)
+            first-child (delay (first (m/children s)))]
+        (m/-walk 
+          (if (or (and (= :ref stype)
+                       (contains? (::m/walked-refs options) @first-child))
+                  (not (m/-ref-schema? s)))
+            s
+            (cond-> (m/deref-all s options)
+              (contains? #{::m/schema :ref} stype)
+              (mu/update-properties assoc-in [::spec ::m/name] (m/-ref s))
+              (= :schema stype)
+              (mu/update-properties assoc-in [::spec ::m/name]
+                                    (m/form @first-child))))
+          this
+          p
+          (if (= :ref stype)
+            ;; replicate functionality from -walk on -ref-schema
+            (update options ::m/walked-refs (fnil conj #{}) (first (m/children s)))
+            options))))
+    (-outer [_ s p c _options]
+      (-> s
+          (m/-set-children c)))))
+          ;(mu/update-properties assoc ::path p)))))
+
 ;; TODO: match patterns to replace for form generation purposes
 ;; e.g. [:and ?input-capable-schema [:fn ...]] => ?input-capable-schema
 (defn deref-subschemas
@@ -129,35 +158,11 @@
   than m/walk does."
   ([schema] (deref-subschemas schema {}))
   ([schema options]
-   (m/walk
-     schema
-     (fn [schema _ children _]
-       ;; TODO TODO: replace with a robust pattern matching system probably
-       (if-some [child-idx (::use-child (m/properties schema))]
-         (nth children child-idx)
-         (let [;; can't call immediately as select-keys will break
-               simple #(m/-set-children schema children)]
-           (case (m/type schema)
-             :schema      (first children)
-             ::m/schema
-             (-> (m/deref (first children))
-                 (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema)))
-             ;(::m/val ::m/schema :ref)
-             (::m/val :ref)
-             (let [child (first children)]
-               (cond-> child ;; some will have keywords etc as first child
-                 (m/schema? child)
-                 (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema))))
-             (:merge :union) (m/deref (simple))
-             ;; needs special handling as long as upstream is broken
-             :select-keys (-> schema
-                              (m/-set-children [(first children) (last (m/children schema))])
-                              m/deref)
-             (simple)))))
-     (assoc options
-            ::m/walk-entry-vals   false
-            ::m/walk-schema-refs  true
-            ::m/walk-refs         true))))
+   (m/-inner
+     deref-walker
+     (m/schema schema options)
+     [] ;; TODO: base path
+     options)))
 
 ;; ------ name/label handling ------
 
@@ -464,7 +469,9 @@
    (add-field-specs schema {:registry registry}))
   ([schema options]
    (let [schema (m/schema schema options)
-         base-path (if (m/-ref-schema? schema) [(m/-ref schema)] [])]
+         base-path (or (and (m/-ref-schema? schema)
+                            (some-> (m/-ref schema) vector))
+                       [])]
      (m/walk
        (deref-subschemas schema options)
        (fn [schema path children _]

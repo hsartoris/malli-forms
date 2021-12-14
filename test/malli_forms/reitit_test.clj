@@ -16,6 +16,7 @@
     [reitit.ring.middleware.muuntaja]
     [reitit.ring.middleware.parameters :as parameters]
     [ring.adapter.jetty :refer [run-jetty]]
+    [ring.middleware.nested-params :refer [wrap-nested-params]]
     [rum.core :as rum]))
 
 (def asn-pool-schema
@@ -107,7 +108,7 @@
                                                                  ;; that or requires a nil->empty string transformer
                                                                  (filter (fn [kv] (not-empty (val kv))))
                                                                  %)))))
-                         ring.middleware.nested-params/wrap-nested-params
+                         wrap-nested-params
                          ;;https://clojurians-log.clojureverse.org/reitit/2021-05-07
                          (fn [handler]
                            (fn [{:keys [params] :as req}]

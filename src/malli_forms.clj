@@ -118,34 +118,29 @@
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
 
-(def deref-walker
-  "Walker that derefs subschemas a la deref-subschemas"
-  (reify m/Walker
-    (-accept [_ s _ _] s) ;; same as m/walk
-    (-inner [this s p options]
-      (let [stype (m/type s)
-            first-child (delay (first (m/children s)))]
-        (m/-walk 
-          (if (or (and (= :ref stype)
-                       (contains? (::m/walked-refs options) @first-child))
-                  (not (m/-ref-schema? s)))
-            s
-            (cond-> (m/deref-all s options)
-              (contains? #{::m/schema :ref} stype)
-              (mu/update-properties assoc-in [::spec ::m/name] (m/-ref s))
-              (= :schema stype)
-              (mu/update-properties assoc-in [::spec ::m/name]
-                                    (m/form @first-child))))
-          this
-          p
-          (if (= :ref stype)
-            ;; replicate functionality from -walk on -ref-schema
-            (update options ::m/walked-refs (fnil conj #{}) (first (m/children s)))
-            options))))
-    (-outer [_ s p c _options]
-      (-> s
-          (m/-set-children c)))))
-          ;(mu/update-properties assoc ::path p)))))
+(defn- walk-inner
+  "Implementation of -inner for a walker that will automatically deref those
+  subschemas that are references to others. Does not infinitely descend."
+  [walker schema path options]
+  (let [stype (m/type schema)
+        first-child (delay (first (m/children schema)))]
+    (m/-walk 
+      (if (or (and (= :ref stype)
+                   (contains? (::m/walked-refs options) @first-child))
+              (not (m/-ref-schema? schema)))
+        schema
+        (cond-> (m/deref-all schema options)
+          (contains? #{::m/schema :ref} stype)
+          (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema))
+          (= :schema stype)
+          (mu/update-properties assoc-in [::spec ::m/name]
+                                (m/form @first-child))))
+      walker
+      path
+      (if (= :ref stype)
+        ;; replicate functionality from -walk on -ref-schema
+        (update options ::m/walked-refs (fnil conj #{}) @first-child)
+        options))))
 
 ;; TODO: match patterns to replace for form generation purposes
 ;; e.g. [:and ?input-capable-schema [:fn ...]] => ?input-capable-schema
@@ -158,11 +153,17 @@
   than m/walk does."
   ([schema] (deref-subschemas schema {}))
   ([schema options]
-   (m/-inner
-     deref-walker
-     (m/schema schema options)
-     [] ;; TODO: base path
-     options)))
+   (let [walker (reify m/Walker
+                  (-accept [_ schema _ _] schema) ;; same as m/walk
+                  (-inner [this schema path options]
+                    (walk-inner this schema path options))
+                  (-outer [_ schema _path children _options]
+                    (m/-set-children schema children)))]
+     (m/-inner
+       walker
+       (m/schema schema options)
+       [] ;; TODO: base path
+       options))))
 
 ;; ------ name/label handling ------
 
@@ -199,7 +200,8 @@
   ;(= ::m/in s) ""
   (if (ident? s)
     (recur (subs (str s) 1))
-    (url-encode s)))
+    (str/replace (url-encode s) "." "_DOT_")))
+
 
 (defn path->name
   "Takes a path to a field in a nested data structure and produces a suitable
@@ -468,36 +470,43 @@
    ;; TODO: remove when not doing active dev
    (add-field-specs schema {:registry registry}))
   ([schema options]
-   (let [schema (m/schema schema options)
-         base-path (or (and (m/-ref-schema? schema)
-                            (some-> (m/-ref schema) vector))
-                       [])]
-     (m/walk
-       (deref-subschemas schema options)
-       (fn [schema path children _]
-         ;(prn schema path children)
-         (let [naive-spec (extract-field-spec schema)
-               ;; TODO: add schema type under ::m/type field here?
-               spec (-> (complete-field-spec
-                          schema naive-spec
-                          (keep #(when (m/schema? %)
-                                   (let [spec (::spec (m/properties %))]
-                                     (when-not (:no-spec spec) spec)))
-                                children))
-                        ;; add path after complete-field-spec in case of
-                        ;; accidental override from child specs
-                        (assoc :path (into base-path path)))
-               children-render? (= ::collection (:type spec))
-               ;; root node without rendering children renders
-               spec (cond-> spec
-                      (and (empty? path) (not children-render?))
-                      (-> (assoc :render? true) add-path-info))]
-           (-> schema
-               (mu/update-properties assoc ::spec spec)
-               (set-children
-                 (if children-render?
-                   (map mark-render children)
-                   children)))))
+   (letfn [(add-field-spec [schema path children]
+             (prn schema path children)
+             (let [naive-spec (extract-field-spec schema)
+                   ;; TODO: add schema type under ::m/type field here?
+                   spec (-> (complete-field-spec
+                              schema naive-spec
+                              (keep #(when (m/schema? %)
+                                       (let [spec (::spec (m/properties %))]
+                                         (when-not (:no-spec spec) spec)))
+                                    children))
+                            ;; add path after complete-field-spec in case of
+                            ;; accidental override from child specs
+                            (assoc :path path))
+                   children-render? (= ::collection (:type spec))
+                   ;; root node without rendering children renders
+                   spec (cond-> spec
+                          (and (empty? path) (not children-render?))
+                          (-> (assoc :render? true) add-path-info))]
+               (-> schema
+                   (mu/update-properties assoc ::spec spec)
+                   (set-children
+                     (if children-render?
+                       (map mark-render children)
+                       children)))))]
+     (m/-inner
+       (reify m/Walker
+         (-accept [_ schema _ _] schema)
+         (-inner [this schema path options]
+           (if-some [child-idx (::use-child (m/properties schema))]
+             (m/-walk this (nth (m/children schema) child-idx) path options)
+             (walk-inner this schema path options)))
+         (-outer [_ schema path children _options]
+           (add-field-spec schema path children)))
+       (m/schema schema options)
+       (or (and (m/-ref-schema? schema)
+                (some-> (m/-ref schema) vector))
+           [])
        options))))
 
 (defn- props->attrs
@@ -688,93 +697,9 @@
      ;; TODO: better solution
      [:input {:type "submit" :name "submit" :value "Submit"}]]]))
 
-
-
-;(def render-fields
-;  "It's very important that the functions here are on :leave, not :enter."
-;  {:name :render-fields
-;   :default-encoder {:compile (fn [schema _]
-;                                {:leave 
-;                                 (let [spec (::spec (m/properties schema))]
-;                                   (when (and (:render? spec)
-;                                              (not (children-render (m/type schema))))
-;                                     (partial labeled-input spec)))})}
-;   :encoders {:map {:leave (fn [child-specs]
-;                             (into [:fieldset] (interpose [:br]) child-specs))}
-;              :map-of {:compile (fn [schema _]
-;                                  (let [path (-> schema m/properties ::spec :path)]
-;                                    {:leave (fn [pair-specs]
-;                                              [:fieldset
-;                                               [:legend (path->label path)]
-;                                               (map #(vector :fieldset %) pair-specs)])}))}}})
-
-
-(defn- collection-schema-transformer
-  [empty-val add-nil?]
-  {:compile (fn [schema _]
-              (let [path (-> schema m/properties ::spec :path)]
-                {:enter (fn [value]
-                          (if (nil? value)
-                            empty-val
-                            (if add-nil?
-                              (conj value nil)
-                              value)))
-                 :leave (fn [value]
-                          [:fieldset
-                           [:legend (path->label path)]
-                           (seq value)])}))})
-
-(def render-fields
-  "Transformer that renders field specs into hiccup markup"
-  ;(let [render-
-  {:name :render-fields
-   ;:default-encoder identity
-   ;; can actually override by settings {:encode/render-field {:compile (fn [schema _] ....
-   ;; on schema
-   :default-encoder {:compile (fn [schema _]
-                                ;; TODO: parameterize probably
-                                ;; maybe store val props in special key on child?
-                                (let [props (m/properties schema)
-                                      default-kv (find props :default)]
-                                  (cond-> nil
-                                    default-kv
-                                    (assoc :enter (fn [value]
-                                                    (if (nil? value) (val default-kv) value)))
-                                    (:render? (::spec props))
-                                    (assoc :leave (fn [value] (render-field schema value))))))}
-   :encoders {:set  (collection-schema-transformer #{nil} true)
-              :map  {:compile (fn [schema _]
-                                (let [child-keys (map #(nth % 0) (m/children schema))]
-                                  {:enter (fn [value]
-                                            ;; if child keys aren't present, transform doesn't recurse to them
-                                            (if (or (nil? value) (map? value))
-                                              (reduce #(update %1 %2 identity) value child-keys)
-                                              value))
-                                   :leave (fn [value]
-                                            ;; preserve order
-                                            ;; things like (interpost [:br]) need to happen during actual render
-                                            (into [:fieldset] (map value) child-keys))}))}
-              :map-of {:compile (fn [schema _]
-                                  (prn schema)
-                                  (let [spec (::spec (m/properties schema))]
-                                    {:enter #(or % {nil nil})
-                                     :leave (when (:render? spec)
-                                              (fn [value]
-                                                [:fieldset
-                                                 [:legend (path->label (:path spec))]
-                                                 (map #(cons :fieldset %) value)]))}))}
-              ;; ok tuple is borked good
-              ;:tuple {:compile (fn [schema _]
-              ;                   (let [len (count (m/children schema))
-              ;                         render (-> schema m/properties ::spec :render?)]
-              ;                     {:enter (fn [value]
-              ;                               (prn value)
-              ;                               (or value (repeat len nil)))
-              ;                      :leave (fn [value]
-              ;                               (prn value)
-              ;                               (if render
-              ;                                 [:fieldset value]
-              ;                                 value))}))}
-
-              :enum {:compile (fn [schema _]
-                                (partial render-enum schema))}}})
+(defn render-form
+  ([schema] (render-form schema nil))
+  ([schema source] (render-form schema source {}))
+  ([schema source options]
+   (-> (collect-field-specs schema source options)
+       (render-specs options))))

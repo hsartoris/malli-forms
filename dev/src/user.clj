@@ -27,3 +27,8 @@
    [:type         {:optional true}  [:enum "multihomed" "stub" "transit" "ixp"]]
    [:tags         {:optional true}  [:set [:string {:max 32}]]]
    [:ranges                         [:set {:min 1} ::range]]])
+
+(comment
+  (require '[malli-forms-test :as mft]
+           '[malli-forms-util-test :as mfut]
+           '[malli-forms.reitit-test :as mfrt]))

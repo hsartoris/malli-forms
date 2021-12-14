@@ -5,19 +5,19 @@
     [malli.core :as m]))
 
 (deftest munge-name-part-test
-  (is (= "some_FSLASH_field"
+  (is (= "some%2Ffield"
          (mf/munge-name-part "some/field")
          (mf/munge-name-part :some/field)))
-  (is (= "some_LT_field"
+  (is (= "some%3Cfield"
          (mf/munge-name-part "some<field")))
-  (is (= "some_GT_field"
+  (is (= "some%3Efield"
          (mf/munge-name-part "some>field")))
-  (is (= "some_DOT_namespaced_FSLASH_keyword"
+  (is (= "some_DOT_namespaced%2Fkeyword"
          (mf/munge-name-part :some.namespaced/keyword))))
 
 
 (deftest path->name-test
-  (is (= "my-map[some_FSLASH_field]"
+  (is (= "my-map[some%2Ffield]"
          (mf/path->name [:my-map :some/field])))
   (is (= "something" (mf/path->name [:something]))))
 
@@ -66,7 +66,7 @@
                   :label    nil
                   :path     []
                   :render?  true}]
-         (mf/encode-fields [string? {::mf/type :email}] nil)))
+         (mf/render-form [string? {::mf/type :email}] nil)))
   (is (= '[:fieldset
            ([:label {:for "mf-password"} "Password"]
             [:input {:id        "mf-password"
@@ -78,7 +78,7 @@
                      :label     "Password"
                      :default   nil
                      :render?   true}])]
-         (mf/encode-fields [:map [:password string?]] nil)))
+         (mf/render-form [:map [:password string?]] nil)))
   (testing "Properties on schema vs on val schema"
     (is (= '[:fieldset
              ([:label {:for "mf-email"} "Email"]
@@ -90,7 +90,7 @@
                        :label     "Email"
                        :render?   true
                        :default   nil}])]
-           (mf/encode-fields [:map [:email {::mf/type :email} string?]] nil))
+           (mf/render-form [:map [:email {::mf/type :email} string?]] nil))
         "Type property on val schema is ignored")
     (is (= '[:fieldset
              ([:label {:for "mf-email"} "Email"]
@@ -102,7 +102,7 @@
                        :label     "Email"
                        :render?   true
                        :default   nil}])]
-           (mf/encode-fields [:map [:email [string? {::mf/type :email}]]] nil))
+           (mf/render-form [:map [:email [string? {::mf/type :email}]]] nil))
         "Type property on schema itself is respected")))
            
 ;(deftest enum-test
@@ -136,7 +136,7 @@
              ([:option {:value "active"} "Active"]
               [:option {:value "locked"} "Locked"]
               [:option {:value "suspended"} "Suspended"])])]
-         (mf/encode-fields
+         (mf/render-form
             [:map
              [:user/id [string? {::mf/type :email}]]
              [:user/state [:enum :active :locked :suspended]]]
@@ -164,7 +164,7 @@
               [:option {:value "locked"
                         :selected true} "Locked"]
               [:option {:value "suspended"} "Suspended"])])]
-         (mf/encode-fields
+         (mf/render-form
             [:map
              [:user/id [string? {::mf/type :email}]]
              [:user/state [:enum :active :locked :suspended]]]

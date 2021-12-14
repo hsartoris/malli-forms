@@ -3,8 +3,11 @@
     [clojure.set :as set]
     [clojure.string :as str]
     [malli.core :as m]
+    [malli.registry :as mr]
     [malli.transform :as mt]
-    [malli.util :as mu]))
+    [malli.util :as mu]
+    ;; TODO
+    [reitit.impl :refer [url-encode url-decode]]))
 
 (def form-ns
   "Namespace of keys that control behavior on field generation for schemas"
@@ -29,12 +32,14 @@
   (def s3 [:select-keys s1 [:a]]))
 
 (def ^:private local-registry
-  {::type         [:enum :number :text
+  {::type         [:enum
+                   :number :text :select
                    ;; TODO
                    :date :email :hidden :checkbox :password :submit :url
                    ;; even more TODO
                    ;; :radio :range
                    ;; :color :datetime-local :file :image :month :reset :search :tel :time :week
+                   ::collection
                    ]
    ::name         string?
    ::label        string?
@@ -49,19 +54,39 @@
                                           the properties of a schema"}]
                               (map #(vector % {:optional true}))
                               field-spec-properties-keys)
-   ::field-spec   [:map 
-                   [:name     [:ref ::name]]
-                   [:label    {:optional true} ::label]
-                   [:id       ::id]
-                   [:type     {:optional true} ::type]
-                   [:attributes ::attributes]
-                   [:render?  {:optional true} ::render?]]})
+   ::field-spec.input
+   [:map {:doc "Field spec for an actual input"}
+    [:name        [:ref ::name]]
+    [:label       {:optional true} ::label]
+    [:id          ::id]
+    [:type        {:optional true} ::type]
+    [:attributes  {:optional true} ::attributes]
+    [:render?     {:optional true} ::render?]]
+
+   ::field-spec.collection
+   [:map {:doc "Field spec for a parent of multiple other field specs"}
+    [:path ::path]
+    [:children [:sequential [:ref ::field-spec]]]]
+   ::field-spec.form
+   [:map {:doc "Field spec for a root element"}
+    [:path ::path]
+    [:children [:sequential [:ref ::field-spec]]]]
+   ::field-spec
+   [:multi {:dispatch :type}
+    [::collection ::field-spec.collection]
+    [::form       ::field-spec.form]
+    [::m/default  ::field-spec.input]]})
 
 (def registry
   "malli registry for this project"
-  (merge (m/default-schemas)
-         (mu/schemas)
-         local-registry))
+  (mr/composite-registry
+    (m/default-schemas)
+    (mu/schemas)
+    local-registry))
+
+(def field-spec-schema
+  "Schema for a field spec"
+  (m/schema ::field-spec {:registry registry}))
 
 ;; ------ utilities -------
 
@@ -93,6 +118,8 @@
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
 
+;; TODO: match patterns to replace for form generation purposes
+;; e.g. [:and ?input-capable-schema [:fn ...]] => ?input-capable-schema
 (defn deref-subschemas
   "Walk schema derefing subchemas; i.e., replace schemas that are references
   to others with those others. Must happen before walking, as otherwise paths
@@ -102,30 +129,35 @@
   than m/walk does."
   ([schema] (deref-subschemas schema {}))
   ([schema options]
-   (m/walk schema
-           (fn [schema _ children _]
-             ;(prn schema children)
-             (let [;; can't call immediately as select-keys will break
-                   simple #(m/-set-children schema children)]
-               ;; TODO: keep track of the ref on the child schema for labeling
-               (case (m/type schema)
-                 :schema (first children)
-
-                 (::m/val ::m/schema :ref)
-                 (let [child (first children)]
-                   (cond-> child ;; some will have keywords etc as first child
-                     (m/schema? child)
-                     (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema))))
-                 (:merge :union) (m/deref (simple))
-                 ;; needs special handling as long as upstream is broken
-                 :select-keys (-> schema
-                                  (m/-set-children [(first children) (last (m/children schema))])
-                                  m/deref)
-                 (simple))))
-           (assoc options
-                  ::m/walk-entry-vals   false
-                  ::m/walk-schema-refs  true
-                  ::m/walk-refs         true))))
+   (m/walk
+     schema
+     (fn [schema _ children _]
+       ;; TODO TODO: replace with a robust pattern matching system probably
+       (if-some [child-idx (::use-child (m/properties schema))]
+         (nth children child-idx)
+         (let [;; can't call immediately as select-keys will break
+               simple #(m/-set-children schema children)]
+           (case (m/type schema)
+             :schema      (first children)
+             ::m/schema
+             (-> (m/deref (first children))
+                 (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema)))
+             ;(::m/val ::m/schema :ref)
+             (::m/val :ref)
+             (let [child (first children)]
+               (cond-> child ;; some will have keywords etc as first child
+                 (m/schema? child)
+                 (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema))))
+             (:merge :union) (m/deref (simple))
+             ;; needs special handling as long as upstream is broken
+             :select-keys (-> schema
+                              (m/-set-children [(first children) (last (m/children schema))])
+                              m/deref)
+             (simple)))))
+     (assoc options
+            ::m/walk-entry-vals   false
+            ::m/walk-schema-refs  true
+            ::m/walk-refs         true))))
 
 ;; ------ name/label handling ------
 
@@ -161,15 +193,41 @@
   ;; TODO: set - special behavior?
   ;(= ::m/in s) ""
   (if (ident? s)
-    (munge-name-part (subs (str s) 1))
-    (str/replace s munge-re name-substring-replacements)))
+    (recur (subs (str s) 1))
+    (url-encode s)))
 
 (defn path->name
   "Takes a path to a field in a nested data structure and produces a suitable
   HTML input name"
   [path]
   (if (seq path)
-    (let [[head & tail] (mapv munge-name-part path)]
+    ;; TODO TODO
+    ;; TODO: this is totally broken on sets as there's no way of telling what elements
+    ;; are associated with what other elements
+    ;; e.g. #{{:a 1, :b 2}} =>
+    ;; root[][a]=1&root[][b]=2 - this only works with one a/b!
+    ;; I'm going to have to index sets somehow, and probably provide a transformer to
+    ;; read them back out of the params.
+    ;; It may make the most sense to just provide a drop-in replacement for ring's nested params
+    ;; middleware - this would go against the ethos of working with existing setups,
+    ;; but the nested params stuff is already totally nonfunctional with malli coercion.
+    ;; #{{:a 1, :b 2}} =>
+    ;; root[0][a]=1&root[0][b]=2
+    ;; nested-params parses that to {:root {:0 {:a "1" :b "2"}}}
+    ;; easily workable with a transformer
+    #_(comment
+        {:name :map->set
+         :decoders {:set (fn [value]
+                           (if (map? value)
+                             (set (vals value))
+                             value))}})
+    ;; but not easy to get the path right when generating, as ::m/in is put there by
+    ;; set schemas themselves. Strengthens the case for a custom walker, perhaps
+
+    (let [[head & tail] (mapv #(if (= % ::m/in)
+                                 ""
+                                 (munge-name-part %)) path)]
+          ;(mapv munge-name-part path)]
       (apply str head (when tail
                         (mapv #(format "[%s]" %) tail))))
     "root"))
@@ -179,10 +237,12 @@
   a human-readable label"
   [path]
   (when (seq path)
-    (-> (str/join \space (mapv #(if (keyword? %)
-                                  (subs (str %) 1)
-                                  (str %))
-                               path))
+    (-> ;(str/join \space (mapv #(if (keyword? %)
+        ;                          (subs (str %) 1)
+        ;                          (str %))
+        ;                       path))
+        ;; TODO
+        (last path)
         (str/replace #"[\/\._-]" " ")
         (str/replace #"\bid(?:\b|\z)" "ID")
         (#(str (.toUpperCase (subs % 0 1)) (subs % 1))))))
@@ -243,6 +303,7 @@
                ratio?
                :> :>= :< :<=
                :int :double]
+    :select   [:enum]
     ;; fake input type that includes schema types that may have (many) children
     ;; intentionally does not include predicate schemas, as they cannot have children
     ::collection [:map :map-of
@@ -327,9 +388,9 @@
   [_ _ _]
   {:no-spec true})
 
-(defmethod complete-field-spec :enum
-  [_ spec _]
-  (assoc spec :type :select))
+;(defmethod complete-field-spec :enum
+;  [_ spec _]
+;  (assoc spec :type :select))
 
 ;; TODO
 (defmethod complete-field-spec :orn [_ _ _])
@@ -434,8 +495,9 @@
 
 (defn- props->attrs
   "Convert field spec from a schema into an attribute map for an input"
-  [{:keys [attributes] :as spec} value]
-  (cond-> (dissoc spec :attributes)
+  [{:keys [attributes required] :as spec} value]
+  (cond-> (dissoc spec :attributes :required)
+    (true? required)    (assoc :required true)
     (some? value)       (assoc :value value)
     (some? attributes)  (conj attributes)))
 
@@ -449,9 +511,10 @@
 (defn- labeled-input
   ([spec] (labeled-input spec (:value spec))) ;; TODO
   ([{:keys [id label] :as field-spec} value]
-   (add-label
-     [:input (props->attrs field-spec value)]
-     label id)))
+   [:div.form-row
+    (when label
+      [:label {:for id} label])
+    [:input (props->attrs field-spec value)]]))
 
 (defmulti render-field
   "Renders a field, keyed on `(:type field-spec)`"
@@ -481,21 +544,11 @@
           (value->label str-val)])]
       label id)))
 
-;; TODO: use some kind of identifiable value like ::placeholder for placeholders
-(defn- collection-schema-collector
-  ([empty-val] (collection-schema-collector empty-val nil))
-  ([empty-val placeholder]
-   {:compile (fn [schema _]
-               (let [spec (::spec (m/properties schema))]
-                 {:enter (fn [value]
-                           (let [value (if (nil? value) empty-val value)]
-                             (cond
-                               (fn? placeholder) (placeholder value)
-                               (some? placeholder) (conj value placeholder)
-                               :else value)))
-                  :leave (fn [value]
-                           (prn (m/type schema) spec value)
-                           (assoc spec :children (seq value)))}))}))
+;(def ^:private  collection-schema-collector
+;  {:compile (fn [schema _]
+;              (let [spec (::spec (m/properties schema))]
+;                {:leave (fn [value]
+;                          (assoc spec :children (seq value)))}))})
 
 (def collect-specs
   "Transformer that collects field specs based on input value."
@@ -504,27 +557,29 @@
                                 ;; TODO: parameterize probably
                                 ;; maybe store val props in special key on child?
                                 (let [props (m/properties schema)
-                                      spec (::spec props)
-                                      default-kv (find props :default)]
-                                  (cond-> nil
-                                    default-kv
-                                    (assoc :enter (fn [value]
-                                                    (if (nil? value) (val default-kv) value)))
+                                      spec (::spec props)]
+                                      ;default-kv (find props :default)]
+                                  (cond
                                     (:render? spec)
-                                    (assoc :leave
-                                           (fn [value] 
-                                             (assoc spec :value value))))))}
+                                    {:leave (fn [value]
+                                              (assoc spec :value value))}
+
+                                    (= ::collection (:type spec))
+                                    {:leave (fn [value]
+                                              (assoc spec :children (seq value)))})))}
+                                  ;(cond-> nil
+                                  ;  default-kv
+                                  ;  (assoc :enter (fn [value]
+                                  ;                  (if (nil? value) (val default-kv) value)))
+                                  ;  (:render? spec)
+                                  ;  (assoc :leave
+                                  ;         (fn [value] 
+                                  ;           (assoc spec :value value))))))}
                                              ;(render-field schema value))))))}
    :encoders  {:map {:compile (fn [schema _]
                                 (let [child-keys (map #(nth % 0) (m/children schema))
                                       spec (::spec (m/properties schema))]
-                                  {;; on enter, ensure placeholder values are present, as
-                                   ;; otherwise transform doesn't recurse to  them
-                                   :enter (fn [value]
-                                            (if (or (nil? value) (map? value))
-                                              (reduce #(update %1 %2 identity) value child-keys)
-                                              value))
-                                   ;; collect child specs, which are now in the vals
+                                  {;; collect child specs, which are now in the vals
                                    :leave (fn [value]
                                             (if (map? value)
                                               ;; preserve order
@@ -532,8 +587,34 @@
                                               (assoc spec :children (map value child-keys))
                                               ;; TODO: then what?
                                               value))}))}
-               :map-of  (collection-schema-collector {} #(assoc % nil nil))
-               :set     (collection-schema-collector #{} #(conj % nil))}})
+               :enum    {:compile (fn [schema _]
+                                    ;; TODO: put during prep
+                                    (let [spec (assoc (::spec (m/properties schema))
+                                                      :options (m/children schema))]
+                                      {:leave (fn [value]
+                                                (assoc spec :value value))}))}}})
+                                      
+               ;:map-of  (collection-schema-collector {} #(assoc % nil nil))
+               ;:set     (collection-schema-collector #{} #(conj % nil))}})
+
+;; TODO: use some kind of identifiable value like ::placeholder for placeholders
+(def add-placeholders
+  "Transformer that adds placeholder values by schema type"
+  {:name :add-placeholders
+   :encoders {:map {:compile (fn [schema _]
+                               (let [child-keys (map #(nth % 0) (m/children schema))]
+                                 {;; on enter, ensure placeholder values are present, as
+                                  ;; otherwise transform doesn't recurse to  them
+                                  :enter (fn [value]
+                                           (if (or (nil? value) (map? value))
+                                             (reduce #(update %1 %2 identity) value child-keys)
+                                             value))}))}
+              :set {:enter (fn [value]
+                             (if (nil? value) #{nil} value))}
+              :map-of {:enter (fn [value]
+                                (if (nil? value) {nil nil} value))}}})
+
+
 
 (defn collect-field-specs
   "Given a schema, a value, and options, prepare the schema via add-field-specs,
@@ -542,7 +623,64 @@
   ([schema source] (collect-field-specs schema source {}))
   ([schema source options]
    (-> (add-field-specs schema options)
-       (m/encode source options (mt/transformer collect-specs)))))
+       (m/encode source options (mt/transformer
+                                  add-placeholders
+                                  mt/default-value-transformer
+                                  collect-specs)))))
+
+(defmulti default-renderer
+  "Renderer used when no theme is specified"
+  :type)
+
+(defmethod default-renderer :default
+  [spec]
+  (labeled-input spec))
+
+(defmethod default-renderer :checkbox
+  [spec]
+  ;; TODO
+  (labeled-input (assoc spec :required false)))
+
+(defmethod default-renderer ::collection
+  [{:keys [path children]}]
+  (prn path)
+  (let [path-end (last path)
+        legend (when (and (some? path-end)
+                          (not= path-end ::m/in))
+                 (value->label path-end))]
+    [:fieldset
+     (when legend
+       [:legend legend])
+     (interpose [:br] (seq children))]))
+
+;(defn render-fields
+;  "Transformer that renders fields by different types of field spec"
+;  [{:keys [theme]}]
+;  ;; TODO: dispatch to multifn with theme
+;  {:name :render-fields
+;   :default-encoder {:leave #(render-spec theme %)}})
+
+(defn render-specs
+  "Given a value as produced by collect-field-specs and options, renders fields
+  defined by AST into markup"
+  ([source] (render-specs source {}))
+  ([source {:keys [render] :or {render default-renderer} :as options}]
+   [:div
+    ;; TODO: better system
+    [:style
+     "form { display: table; }
+     label, input { display: table-cell; margin-bottom: 10px; }
+     div.form-row { display: table-row; }
+     label { padding-right: 10px; }"]
+    [:form ;; TODO: attributes etc
+     {:method "POST"}
+     (m/encode (m/deref field-spec-schema) source options
+               (mt/transformer
+                 {:name :render-specs
+                  :encoders {:map {:leave render}}}))
+     ;; TODO: better solution
+     [:input {:type "submit" :name "submit" :value "Submit"}]]]))
+
 
 
 ;(def render-fields
@@ -633,27 +771,3 @@
 
               :enum {:compile (fn [schema _]
                                 (partial render-enum schema))}}})
-
-
-(defn encode-fields
-  "Encode the fields of a form from a schema, with an optional object"
-  ([schema] (encode-fields schema nil))
-  ([schema source] (encode-fields schema source {}))
-  ([schema source options]
-   (-> (add-field-specs schema options)
-       (m/encode source options (mt/transformer render-fields)))))
-
-(def form-props-schema
-  "Attributes map that may be defined in the top level field of a schema"
-  [:map
-   [::attributes
-    [:map
-     [:method [:enum {:default :POST} :GET :POST]]]]])
-
-(defn encode-form
-  "Encode a form from a schema, optionally with a (partial) object"
-  ([schema] (encode-form schema nil))
-  ([schema source]
-   ;[:form (update (::attributes (m/properties schema))
-   ;               :method #(or 
-   (encode-fields schema source)))

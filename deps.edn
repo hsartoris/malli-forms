@@ -1,5 +1,10 @@
 {:deps {metosin/malli {:mvn/version "0.7.0"}}
- :aliases {:test              {:extra-paths ["test"]}
+ :aliases {:test              {:extra-paths ["test"]
+                               :extra-deps {metosin/reitit {:mvn/version "0.5.15"}
+                                            http-kit/http-kit {:mvn/version "2.5.3"}
+                                            ring/ring-jetty-adapter {:mvn/version "1.9.4"}
+                                            rum/rum {:mvn/version "0.12.8"
+                                                     :exclusions [cljsjs/react cljsjs/react-dom]}}}
            :dev               {:extra-paths ["dev/src"]}
            :repl/rebel        {:extra-deps {nrepl/nrepl                 {:mvn/version "0.8.3"}
                                             cider/cider-nrepl           {:mvn/version "0.27.3"}

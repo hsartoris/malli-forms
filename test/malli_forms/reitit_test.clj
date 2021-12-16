@@ -72,32 +72,27 @@
                                   (-> asn-pool-schema mf/collect-field-specs mf/render-specs)]]])})}
       :post     {;:compile coercion/compile-request-coercers
                  :parameters {:form asn-pool-schema}
-                 :coercion (reitit.coercion.malli/create
-                             {:validate true
-                              :error-keys #{:type :coercion :in :schema :value :errors :transformed}
-                              :transformers (assoc (:transformers reitit.coercion.malli/default-options)
-                                                   :body {:default reitit.coercion.malli/json-transformer-provider})})
                  :handler   (fn [req]
-                              (pprint req)
+                              ;(pprint req)
                               {:status 200
                                :body (rum/render-static-markup
                                        [:html
                                         [:body
                                          (let [params (:params req)
                                                pp->str #(with-out-str (pprint %))
+                                               ; for whatever reason, this doesn't work when provided to the malli coercion
                                                decoded (m/decode asn-pool-schema params
                                                                  (mt/transformer
-                                                                   mt/json-transformer
-                                                                   ;mt/string-transformer
-                                                                   mt/default-value-transformer))]
+                                                                   (mt/key-transformer {:decode keyword})
+                                                                   mt/default-value-transformer
+                                                                   (mt/json-transformer)
+                                                                   mf/unnest-seq-transformer
+                                                                   (mt/string-transformer)
+                                                                   (mt/strip-extra-keys-transformer)))]
                                            (list
                                              [:pre (pp->str params)]
                                              [:pre (pp->str decoded)]
                                              [:pre (pp->str (m/explain asn-pool-schema decoded))]))]])})}}]
-                              ;(pprint
-                              ;(pprint (m/explain asn-pool-schema (:form-params req)))
-                              ;{:status  200
-                              ; :body    req})}}]
     {;:compile coercion/compile-request-coercers
      :exception pretty/exception
      :data {:muuntaja muuntaja/instance
@@ -112,18 +107,18 @@
                          ;;https://clojurians-log.clojureverse.org/reitit/2021-05-07
                          (fn [handler]
                            (fn [{:keys [params] :as req}]
-                             (prn params)
+                             ;(prn params)
                              (handler (assoc req :form-params params))))
                          ;reitit.ring.middleware.muuntaja/format-negotiate-middleware
                          reitit.ring.middleware.muuntaja/format-response-middleware
                          (exception/create-exception-middleware
                            {::exception/default (partial exception/wrap-log-to-console exception/default-handler)})
                          ;reitit.ring.middleware.muuntaja/format-request-middleware
-                         (fn [handler]
-                           (fn [req]
-                             (let [res (handler req)]
-                               (pprint res)
-                               res)))
+                         ;(fn [handler]
+                         ;  (fn [req]
+                         ;    (let [res (handler req)]
+                         ;      (pprint res)
+                         ;      res)))
                          rrc/coerce-exceptions-middleware
                          rrc/coerce-request-middleware]}}))
 

@@ -41,8 +41,8 @@
     [:set [:string {:max 32}]]]
    [:ranges
     [:and {::mf/use-child 0} ;; TODO: not good; somehow simplify this situation
-     [:vector {:min 1} ::range]
-     ;[:set {:min 1} ::range]
+     ;[:vector {:min 1} ::range]
+     [:set {:min 1} ::range]
      [:fn (fn [ranges]
             (boolean (reduce #(if (< %1 (:first %2)) (:last %2) (reduced false)) 0 ranges)))]]]])
 
@@ -61,7 +61,7 @@
   (ring/router
     ["/pools/new"
      {:name     ::new-pool
-      :get      {:handler (constantly
+      :get      {:handler (fn [_req]
                             {:status 200
                              :headers {"content-type" "text/html"}
                              :body 

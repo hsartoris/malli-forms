@@ -31,4 +31,5 @@
 (comment
   (require '[malli-forms-test :as mft]
            '[malli-forms-util-test :as mfut]
-           '[malli-forms.reitit-test :as mfrt]))
+           '[malli-forms.reitit-test :as mfrt]
+           '[malli-forms.collections-test :as mfct]))

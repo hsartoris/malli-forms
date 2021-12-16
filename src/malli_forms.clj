@@ -123,45 +123,6 @@
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
 
-#_
-(comment
-  ;; Notes on walking
-  ;; all of the functions accept options as final arg
-  m/Schema m/-walk
-  ;; - called on a schema object primarily, with Walker provided
-  ;; - returns schema as transformed by Walker, but that can happen many ways
-  ;; - allows schema to define how it should be walked, including such issues
-  ;;  as child schemas, which are otherwise opaque to the walker
-  ;; - most (all?) core schemas call m/-accept to check that Walker wants to
-  ;;  work with the schema; the purpose of this appears to be early
-  ;;  termination, as evidenced by its usage in malli.util
-  ;; - typical call structure looks like:
-  (when (m/-accept walker this path options)
-    (m/-outer walker this path
-              (map #(m/-inner walker % (conj path "path relevant for schema"))
-                   children)
-              options))
-  m/Walker
-  m/-accept
-  ;; - as above, allows early termination
-  m/-inner
-  ;; - Walker is provided a schema, implicitly a child of schema currently
-  ;;  being walked, and path
-  ;; - This should return the child schema as transformed by Walker - overlap
-  ;;  with m/-walk is intentional; default m/walk Walker simply calls m/-walk
-  ;;  from m/-inner
-  ;; - Essentially an 'enter' phase of walking: allows advanced behavior to be
-  ;;  executed *before* traversing a child schema, e.g. modifying the path
-  m/-outer
-  ;; - Walker is provided a schema, a path, and walked children
-  ;; - This is where the actual transform of the schema is largely expected to
-  ;;  take place: m/walk implements this as just calling the provided function
-  ;;  on the four args.
-  ;; - Must set the walked children to be the children of the schema -
-  ;;  returning the schema without doing so will return the original, unwalked
-  ;;  children.
-  )
-
 (defn- maybe-deref
   "For use in the -inner function of a Walker. If a schema is derefable, and,
   when a :ref type, has not been derefed yet, returns the result of calling
@@ -185,53 +146,6 @@
          path (cond-> options
                       (= :ref stype) (update ::m/walked-refs (fnil conj #{}) first-child))))))
 
-;(defn- walk-inner
-;  "Implementation of -inner for a walker that will automatically deref those
-;  subschemas that are references to others. Does not infinitely descend."
-;  [walker schema path options]
-;  (let [stype (m/type schema)
-;        first-child (delay (first (m/children schema)))]
-;    (m/-walk 
-;      (if (or (and (= :ref stype)
-;                   (contains? (::m/walked-refs options) @first-child))
-;              (not (m/-ref-schema? schema)))
-;        schema
-;        (cond-> (m/deref-all schema options)
-;          (contains? #{::m/schema :ref} stype)
-;          (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema))
-;          (= :schema stype)
-;          (mu/update-properties assoc-in [::spec ::m/name]
-;                                (m/form @first-child))))
-;      walker
-;      path
-;      (if (= :ref stype)
-;        ;; replicate functionality from -walk on -ref-schema
-;        (update options ::m/walked-refs (fnil conj #{}) @first-child)
-;        options))))
-
-;; TODO: match patterns to replace for form generation purposes
-;; e.g. [:and ?input-capable-schema [:fn ...]] => ?input-capable-schema
-;(defn deref-subschemas
-;  "Walk schema derefing subchemas; i.e., replace schemas that are references
-;  to others with those others. Must happen before walking, as otherwise paths
-;  are difficult to recover. Not the same as m/deref-all.
-;  Note that this is not fully recursive in that, though it fully descends and
-;  derefs subschemas in the original, it will not chase emitted refs any further
-;  than m/walk does."
-;  ([schema] (deref-subschemas schema {}))
-;  ([schema options]
-;   (let [walker (reify m/Walker
-;                  (-accept [_ schema _ _] schema) ;; same as m/walk
-;                  (-inner [this schema path options]
-;                    (walk-inner this schema path options))
-;                  (-outer [_ schema _path children _options]
-;                    (m/-set-children schema children)))]
-;     (m/-inner
-;       walker
-;       (m/schema schema options)
-;       [] ;; TODO: base path
-;       options))))
-
 ;; ------ name/label handling ------
 
 (defn munge-name-part
@@ -248,29 +162,6 @@
   HTML input name"
   [path]
   (if (seq path)
-    ;; TODO TODO
-    ;; TODO: this is totally broken on sets as there's no way of telling what elements
-    ;; are associated with what other elements
-    ;; e.g. #{{:a 1, :b 2}} =>
-    ;; root[][a]=1&root[][b]=2 - this only works with one a/b!
-    ;; I'm going to have to index sets somehow, and probably provide a transformer to
-    ;; read them back out of the params.
-    ;; It may make the most sense to just provide a drop-in replacement for ring's nested params
-    ;; middleware - this would go against the ethos of working with existing setups,
-    ;; but the nested params stuff is already totally nonfunctional with malli coercion.
-    ;; #{{:a 1, :b 2}} =>
-    ;; root[0][a]=1&root[0][b]=2
-    ;; nested-params parses that to {:root {:0 {:a "1" :b "2"}}}
-    ;; easily workable with a transformer
-    #_(comment
-        {:name :map->set
-         :decoders {:set (fn [value]
-                           (if (map? value)
-                             (set (vals value))
-                             value))}})
-    ;; but not easy to get the path right when generating, as ::m/in is put there by
-    ;; set schemas themselves. Strengthens the case for a custom walker, perhaps
-
     (let [[head & tail] (mapv #(if (= % ::m/in)
                                  ""
                                  (munge-name-part %)) path)]
@@ -509,9 +400,9 @@
                        [])]
      (letfn [(inner [walker schema path options]
                ;(prn schema path options)
+               ;; TODO: ditch this in favor of pattern matching etc
                (or (when-some [child-idx (::use-child (m/properties schema))] ;; enter:1
                      (m/-inner walker (nth (m/children schema) child-idx) path options))
-                   ;(m/-walk (nth (m/children schema) child-idx) this path options))
                    (maybe-deref walker schema path options) ;; enter:2
                    ;; TODO: combine with above, probably
                    (let [stype (m/type schema)
@@ -572,24 +463,6 @@
          (m/schema schema options)
          base-path
          options)))))
-
-;(defn- render-enum
-;  "Render an enum schema, with possible value"
-;  [schema value]
-;  (let [{:keys [id label] :as props} (::spec (m/properties schema))]
-;    (add-label
-;      [:select (props->attrs props nil)
-;       (for [child (m/children schema)
-;             ;; TODO: leave stringification up to generator?
-;             :let [str-val (if (keyword? child)
-;                             (subs (str child) 1)
-;                             (str child))
-;                   sel? (= child value)]]
-;         [:option
-;          (cond-> {:value str-val}
-;            sel? (assoc :selected true))
-;          (value->label str-val)])]
-;      label id)))
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholders
 (def add-placeholders
@@ -663,13 +536,6 @@
     (some? value)       (assoc :value value)
     (some? attributes)  (conj attributes)
     (true? selected)    (assoc :selected true)))
-
-;(defn- add-label
-;  "When `label` is non-nil, adds a label field in front of `markup`"
-;  [markup label id]
-;  (if label
-;    (list [:label {:for id} label] markup)
-;    markup))
 
 (defn- labeled-input
   ([spec] (labeled-input spec (:value spec))) ;; TODO
@@ -768,7 +634,7 @@
      {:method "POST"}
      (m/encode (m/deref field-spec-schema) source options
                (mt/transformer
-                 {:name :render-specs
+                 {:name :render-specs ;; due to transformer ordering this runs after splice-idxs:leave
                   :encoders {:map {:leave render}}}
                  {:name :splice-idxs
                   :encoders {:map {:enter
@@ -776,8 +642,7 @@
                                      (if (seq idxs)
                                        (-> spec
                                            (update :path splice-real-indexes idxs)
-                                           ;; pass idxs on to children if they
-                                           ;; have none
+                                           ;; pass idxs on to children if they have none
                                            (update :children
                                                    (fn [children]
                                                      (for [child children]
@@ -785,8 +650,7 @@
                                        spec))
                                    :leave
                                    (fn [spec]
-                                     ;; recalculate path info for specs with
-                                     ;; idxs on them 
+                                     ;; recalculate path info for specs with idxs on them 
                                      (if (seq (:idxs spec))
                                        (add-path-info spec)
                                        ;; path info added at build time for concrete paths
@@ -801,3 +665,29 @@
   ([schema source options]
    (-> (collect-field-specs schema source options)
        (render-specs options))))
+
+(defn- unnest-seq
+  "See unnest-seq-transformer"
+  [value]
+  (prn value)
+  (if (map? value) (vals value) value))
+
+(def unnest-seq-transformer
+  "Transformer that handles the way data in sequential forms (including sets)
+  will be returned by ring's nested-params middleware, namely:
+  ```
+  x[0][a]=1&x[0][b]=2
+  ;=>
+  {:x {:0 {:a \"1\", :b \"2\"}}}
+  ```
+  In a nutshell: when this transformer encounters a map where a flat collection
+  is expected, it returns the values of the map. Further coercion should be
+  performed by other transformers, like malli.transformer/collection-transformer"
+  (let [coders (into {}
+                     (for [stype (::collection schema-type-by-input-type)
+                           :when (not= stype :map-of)]
+                       {stype unnest-seq}))]
+    {:name      :unnest-seq
+     :encoders  coders
+     :decoders  coders}))
+

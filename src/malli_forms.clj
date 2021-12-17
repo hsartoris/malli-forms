@@ -148,7 +148,7 @@
 
 ;; ------ name/label handling ------
 
-(defn munge-name-part
+(defn- munge-name-part
   "Munge a part of a field name into an HTML-compatible string"
   [s]
   ;; TODO: not very robust
@@ -170,25 +170,23 @@
                         (mapv #(format "[%s]" %) tail))))
     "root"))
 
+;; TODO: test
+(defn value->label
+  "Process a value into a form label"
+  [v]
+  (some-> v str
+          (cond->
+            (keyword? v) (subs 1))
+          (str/replace #"[\/\._-]" " ")
+          (str/replace #"\bid(?:\b|\z)" "ID")
+          (#(str (.toUpperCase (subs % 0 1)) (subs % 1)))))
+
 (defn path->label
   "Takes a path to a field in a nested data structure and attempts to produce
   a human-readable label"
   [path]
   (when (seq path)
-    (-> ;(str/join \space (mapv #(if (keyword? %)
-        ;                          (subs (str %) 1)
-        ;                          (str %))
-        ;                       path))
-        ;; TODO
-        (last path)
-        (str/replace #"[\/\._-]" " ")
-        (str/replace #"\bid(?:\b|\z)" "ID")
-        (#(str (.toUpperCase (subs % 0 1)) (subs % 1))))))
-
-(defn value->label
-  "Render a value via path->label"
-  [value]
-  (path->label [value]))
+    (value->label (last path))))
 
 (defn- add-path-info
   "Add name, id, and label to a spec, based on a path already added to it"

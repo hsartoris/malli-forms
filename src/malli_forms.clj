@@ -123,29 +123,6 @@
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
 
-(defn- maybe-deref
-  "For use in the -inner function of a Walker. If a schema is derefable, and,
-  when a :ref type, has not been derefed yet, returns the result of calling
-  m/-walk on the derefed value."
-  [walker schema path options]
-  (let [stype (m/type schema)
-        first-child (first (m/children schema))]
-    (when (and (m/-ref-schema? schema)
-               (not (and (= :ref stype)
-                         (contains? (::m/walked-refs options) first-child))))
-      ;(println "Derefing schema of type" stype)
-      (m/-inner
-        walker
-        ;; do our best to keep track of the name of the ref
-        (cond-> (m/deref-all schema options)
-          (contains? #{::m/schema :ref} stype)
-          (mu/update-properties assoc-in [::spec ::m/name] (m/-ref schema))
-          (= :schema stype)
-          (mu/update-properties assoc-in [::spec ::m/name]
-                                (m/form first-child)))
-         path (cond-> options
-                      (= :ref stype) (update ::m/walked-refs (fnil conj #{}) first-child))))))
-
 ;; ------ name/label handling ------
 
 (defn- munge-name-part
@@ -397,17 +374,36 @@
                             (some-> (m/-ref schema) vector))
                        [])]
      (letfn [(inner [walker schema path options]
-               ;(prn schema path options)
-               ;; TODO: ditch this in favor of pattern matching etc
-               (or (when-some [child-idx (::use-child (m/properties schema))] ;; enter:1
-                     (m/-inner walker (nth (m/children schema) child-idx) path options))
-                   (maybe-deref walker schema path options) ;; enter:2
-                   ;; TODO: combine with above, probably
-                   (let [stype (m/type schema)
-                         input-type (schema-type->input-type stype)]
+               (let [stype (m/type schema)
+                     children (m/children schema)
+                     first-child (first children)]
+                 (or ;; when indicated, directly replace with target child - enter:1
+                     ;; TODO: ditch this in favor of pattern matching etc
+                     (when-some [child-idx (::use-child (m/properties schema))]
+                       (m/-inner walker (nth children child-idx) path options))
+                     ;; schema is a ref schema but not of type :ref specifically
+                     (when (and (m/-ref-schema? schema) (not= :ref stype))
+                       (let [ref-name (case stype ;; extraction rules for getting ref name
+                                        ::m/schema  (m/-ref schema)
+                                        :schema     (m/form first-child)
+                                        nil)]
+                         (m/-inner walker
+                                   ;; add ref name to properties when available
+                                   (cond-> (m/deref-all schema options)
+                                     ref-name (mu/update-properties assoc-in [::spec ::m/ref] ref-name))
+                                   path options)))
+                     ;; schema is an unwalked :ref schema - walk and mark
+                     (when (and (= :ref stype) (not (contains? (::m/walked-refs options) first-child)))
+                       (m/-inner walker
+                                 (-> (m/deref-all schema options)
+                                     ;; can always add ref name for :ref
+                                     (mu/update-properties assoc-in [::spec ::m/ref] (m/-ref schema)))
+                                 path
+                                 (update options ::m/walked-refs (fnil conj #{}) first-child)))
+                     ;; cases that hinge only on schema type
                      (case stype
-                       :map
-                       ;; basically reproduce the malli source here
+                       :map ;; basically reproduce the malli source here
+                       ;; TODO: might be able to replace this with walking vals
                        (m/-outer walker schema path
                                  (m/-vmap
                                    (fn [[k s]]
@@ -422,14 +418,13 @@
                                  options)
                        ;; TODO: good?
                        :maybe
-                       (m/-walk (nth (m/children schema) 0) walker path (assoc options ::required false))
-                       ;(:and :andn :or :orn :maybe)
+                       (m/-walk first-child walker path (assoc options ::required false))
                        ;; otherwise, recurse with options sometimes updated
                        ;; TODO: terminating render is killing it for both
                        ;; parent and children - only want to hit children
                        (m/-walk schema walker path
                                 (update options ::render?
-                                        #(or (= input-type ::collection)
+                                        #(or (= (schema-type->input-type stype) ::collection)
                                              (and % (not (#{:and :andn :or :orn} stype))))))))))
              (outer [schema path children options]
                (let [naive-spec (extract-field-spec schema)

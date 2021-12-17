@@ -767,3 +767,10 @@
           :explanation  error
           :humanized    (me/humanize error)})
        decoded))))
+
+;; remaining:
+;; - clean up field-spec schema to match reality
+;; - format errors into rendered form
+;; - attempt parse macro
+;; - attempt parse=>re-render form macro built on previous
+;; - optional reitit coercion module

@@ -2,4 +2,5 @@
  :linters {:missing-docstring             {:level :warning}
            :shadowed-var                  {:level :warning}
            :unsorted-required-namespaces  {:level :warning}
-           :consistent-alias              {:level :error}}}
+           :consistent-alias              {:level :error}}
+ :exclude-files ["dev/src/user.clj"]}

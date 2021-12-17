@@ -3,6 +3,7 @@
     [clojure.set :as set]
     [clojure.string :as str]
     [malli.core :as m]
+    [malli.error :as me]
     [malli.registry :as mr]
     [malli.transform :as mt]
     [malli.util :as mu]
@@ -252,6 +253,20 @@
                     [(unqualify k) v])))
           (m/properties schema))))
 
+(defn- schema->spec
+  "Get a spec from a schema, except for when it is flagged no-spec, or it is
+  not a schema"
+  [schema]
+  (when (m/schema? schema)
+    (let [spec (::spec (m/properties schema))]
+      (when-not (:no-spec spec) spec))))
+
+(defn- schemas->specs
+  "Get specs for every schema in `schemas` that is a schema and is not flagged
+  as no-spec"
+  [schemas]
+  (keep schema->spec schemas))
+
 (defmulti
   ^{:arglists '([schema naive-field-spec child-specs])}
   complete-field-spec
@@ -275,20 +290,6 @@
   ;; Not needed to cover :merge, :select-keys, :union, as they are derefed out
   )
 
-(defn- schema->spec
-  "Get a spec from a schema, except for when it is flagged no-spec, or it is
-  not a schema"
-  [schema]
-  (when (m/schema? schema)
-    (let [spec (::spec (m/properties schema))]
-      (when-not (:no-spec spec) spec))))
-
-(defn- schemas->specs
-  "Get specs for every schema in `schemas` that is a schema and is not flagged
-  as no-spec"
-  [schemas]
-  (keep schema->spec schemas))
-
 (defmethod complete-field-spec :or
   [_ spec children]
   (->> children schemas->specs intersect-maps (into spec)))
@@ -307,6 +308,13 @@
   [_ spec [child]]
   ;; TODO: figure out how to actually convert
   (assoc spec :pattern (str child)))
+
+(defmethod complete-field-spec :string
+  [schema spec _]
+  (let [#_:clj-kondo/ignore {:keys [min max]} (m/properties schema)]
+    (cond-> spec
+      min (assoc :minlength min)
+      max (assoc :maxlength max))))
 
 ;; why though
 (defmethod complete-field-spec 'nil?
@@ -539,10 +547,6 @@
      [:label {:for id} label])
    [:input (props->attrs field-spec)]])
 
-(defmulti default-renderer
-  "Renderer used when no theme is specified"
-  :type)
-
 (defn- splice-real-indexes
   "Given a path that contains one or more ::m/in and a sequence of actual
   indexes, replace the first ::m/in with the first index, etc."
@@ -563,6 +567,20 @@
       (= ::m/in head) (recur (conj out idx) tail (next idxs))
       ;; don't replace, just put on stack
       :else (recur (conj out head) tail idxs))))
+
+(defn- coll-legend
+  "Get a legend value for a collection based on its spec"
+  [spec]
+  (or (some-> spec ::m/name value->label)
+      (let [path-end (last (:path spec))]
+        (when (and (some? path-end)
+                   (not= path-end ::m/in))
+          (value->label path-end)))))
+
+
+(defmulti default-renderer
+  "Renderer used when no theme is specified"
+  :type)
 
 (defmethod default-renderer :default
   [spec]
@@ -590,14 +608,22 @@
                                     :id       id
                                     :value    option))]))])
 
-(defn- coll-legend
-  "Get a legend value for a collection based on its spec"
-  [spec]
-  (or (some-> spec ::m/name value->label)
-      (let [path-end (last (:path spec))]
-        (when (and (some? path-end)
-                   (not= path-end ::m/in))
-          (value->label path-end)))))
+(defmethod default-renderer :select
+  [{:keys [options label #_:clj-kondo/ignore name value id] :as spec}]
+  (list
+    (when label
+      [:label {:for id} label])
+    [:select (dissoc spec :label :options :value)
+     (list
+       (when-not (some #(= value %) options) ;; nothing selected
+         [:option {:selected true :value "" :disabled true} "Select an option"])
+       (for [option options
+             :let [label  (value->label option)
+                   sel?   (= option value)]]
+         [:option 
+          (cond-> {:value option}
+            sel? (assoc :selected true))
+          label]))]))
 
 (defmethod default-renderer ::collection
   [{:keys [children] :as spec}]
@@ -699,3 +725,45 @@
      :encoders  coders
      :decoders  coders}))
 
+(def ^:private decoder
+  "Memoized m/decoder"
+  (memoize m/decoder))
+
+(def parse-stack
+  "Transformer stack for parsing input data"
+  [;; TODO: can do better than this. Will need to cover map-of as well
+   (mt/key-transformer {:decode keyword})
+   mt/default-value-transformer ;; TODO: options for this
+   unnest-seq-transformer
+   (mt/string-transformer) ;; includes mt/json-transformer, basically
+   (mt/strip-extra-keys-transformer)])
+
+(def ^:private parse-transformer
+  (apply mt/transformer parse-stack))
+
+(defrecord ParseFailure [schema data options decoded explanation humanized])
+
+(defn parse
+  "Simple parse and validate using schema against data. Throws on failure."
+  ([schema data] (parse schema data {}))
+  ([schema data {::keys [validate] :or {validate true} :as options}]
+   (let [decode (decoder schema options parse-transformer)
+         ;valid? (if validate (m/validator schema options) (constantly true))
+         explain (if validate (m/explainer schema options) (constantly nil))
+         decoded (try
+                   (decode data)
+                   (catch Exception e
+                     (throw (ex-info "Unexpected exception parsing data"
+                                     {:data     data
+                                      :schema   schema
+                                      :options  options}
+                                     e))))]
+     (if-some [error (explain decoded)]
+       (map->ParseFailure
+         {:schema       schema
+          :data         data
+          :options      options
+          :decoded      decoded
+          :explanation  error
+          :humanized    (me/humanize error)})
+       decoded))))

@@ -2,13 +2,11 @@
   (:require
     [clojure.pprint :refer [pprint]]
     [malli-forms :as mf]
-    [malli.core :as m]
-    [malli.transform :as mt]
-    [org.httpkit.server :refer [run-server]]
+    ;[malli.core :as m]
     [muuntaja.core :as muuntaja]
-    [reitit.coercion :as coercion]
+    ;[reitit.coercion :as coercion]
     [reitit.coercion.malli]
-    [reitit.core :as r]
+    ;[reitit.core :as r]
     [reitit.dev.pretty :as pretty]
     [reitit.ring :as ring]
     [reitit.ring.coercion :as rrc]
@@ -43,8 +41,13 @@
     [:and {::mf/use-child 0} ;; TODO: not good; somehow simplify this situation
      ;[:vector {:min 1} ::range]
      [:set {:min 1} ::range]
-     [:fn (fn [ranges]
-            (boolean (reduce #(if (< %1 (:first %2)) (:last %2) (reduced false)) 0 ranges)))]]]])
+     [:fn {:error/message "Ranges should not overlap"}
+      (fn [ranges]
+        (every? (fn [[r1 r2]]
+                  (or (nil? r2) ;; only one
+                      (and (< (:first r1) (:first r2))
+                           (< (:last r1) (:last r2)))))
+                (partition-all 2 1 ranges)))]]]])
 
 (def ex-input
   "input valid for ex-schema"
@@ -81,18 +84,10 @@
                                          (let [params (:params req)
                                                pp->str #(with-out-str (pprint %))
                                                ; for whatever reason, this doesn't work when provided to the malli coercion
-                                               decoded (m/decode asn-pool-schema params
-                                                                 (mt/transformer
-                                                                   (mt/key-transformer {:decode keyword})
-                                                                   mt/default-value-transformer
-                                                                   (mt/json-transformer)
-                                                                   mf/unnest-seq-transformer
-                                                                   (mt/string-transformer)
-                                                                   (mt/strip-extra-keys-transformer)))]
+                                               decoded (mf/parse asn-pool-schema params)]
                                            (list
                                              [:pre (pp->str params)]
-                                             [:pre (pp->str decoded)]
-                                             [:pre (pp->str (m/explain asn-pool-schema decoded))]))]])})}}]
+                                             [:pre (pp->str decoded)]))]])})}}]
     {;:compile coercion/compile-request-coercers
      :exception pretty/exception
      :data {:muuntaja muuntaja/instance
@@ -122,16 +117,20 @@
                          rrc/coerce-exceptions-middleware
                          rrc/coerce-request-middleware]}}))
 
-(def app (ring/ring-handler router))
+(def ^:private app (ring/ring-handler router))
 
-(defonce server (atom nil))
+(defonce ^:private server (atom nil))
 
-(defn stop []
+(defn stop
+  "Stop the running test server"
+  []
   (when-some [s @server]
     (.stop s))
   (reset! server nil))
 
-(defn start []
+(defn start
+  "Start a server with an endpoint at /pools/new"
+  []
   (stop)
   (reset! server
           (run-jetty

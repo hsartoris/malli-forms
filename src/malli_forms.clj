@@ -433,6 +433,7 @@
                                   (not (#{::map ::collection} (:type naive-spec))))
                      reqd? (and render? (or root? (::required options)))
                      naive-spec' (cond-> naive-spec
+                                   root?    (assoc :root? true)
                                    render?  (assoc :render? true)
                                    reqd?    (assoc :required true))
                      spec (-> (complete-field-spec schema naive-spec' children)
@@ -443,6 +444,7 @@
                      concrete-path? (not (some #(= % ::m/in) path))
                      spec (if (and render? concrete-path?)
                             (add-path-info spec) spec)]
+                 ;; TODO: remove children marked no-spec and send back to inner if any
                  (-> schema
                      (mu/update-properties assoc ::spec spec)
                      (m/-set-children children))))]
@@ -523,20 +525,20 @@
 
 (defn- props->attrs
   "Convert field spec from a schema into an attribute map for an input"
-  [{:keys [attributes required selected] :as spec} value]
-  (cond-> (dissoc spec :attributes :required :selected)
+  [{:keys [attributes required selected value] :as spec}]
+  (cond-> (dissoc spec :attributes :required :selected :value)
     (true? required)    (assoc :required true)
     (some? value)       (assoc :value value)
     (some? attributes)  (conj attributes)
     (true? selected)    (assoc :selected true)))
 
 (defn- labeled-input
-  ([spec] (labeled-input spec (:value spec))) ;; TODO
-  ([{:keys [id label] :as field-spec} value]
-   [:div.form-row
-    (when label
-      [:label {:for id} label])
-    [:input (props->attrs field-spec value)]]))
+  [{:keys [id label] :as field-spec}]
+  [:div.form-row
+   (when label
+     [:label {:for id} label])
+   [:input (props->attrs field-spec)]])
+
 (defmulti default-renderer
   "Renderer used when no theme is specified"
   :type)
@@ -583,8 +585,10 @@
                sel? (= option value)]]
      (list
        [:label {:for id} label]
-       [:input (props->attrs
-                 (assoc spec :selected sel?, :id id) option)]))])
+       [:input (props->attrs (assoc spec
+                                    :selected sel?
+                                    :id       id
+                                    :value    option))]))])
 
 (defn- coll-legend
   "Get a legend value for a collection based on its spec"
@@ -611,45 +615,56 @@
      [:legend l])
    (interpose [:br] (seq children))])
 
+(defmethod default-renderer ::form
+  [{:keys [child] :as spec}]
+  [:div
+   ;; TODO: better system
+   [:style
+    "form { display: table; }
+    label, input { display: table-cell; margin-bottom: 10px; }
+    div.form-row { display: table-row; }
+    label { padding-right: 10px; }"]
+   [:form
+    (default (props->attrs spec) :method "POST")
+    child
+    ;; TODO: better solution
+    [:input {:type "submit" :name "submit" :value "Submit"}]]])
+
 (defn render-specs
   "Given a value as produced by collect-field-specs and options, renders fields
   defined by AST into markup"
   ([source] (render-specs source {}))
   ([source {:keys [render] :or {render default-renderer} :as options}]
-   [:div
-    ;; TODO: better system
-    [:style
-     "form { display: table; }
-     label, input { display: table-cell; margin-bottom: 10px; }
-     div.form-row { display: table-row; }
-     label { padding-right: 10px; }"]
-    [:form ;; TODO: attributes etc
-     {:method "POST"}
-     (m/encode (m/deref field-spec-schema) source options
-               (mt/transformer
-                 {:name :render-specs ;; due to transformer ordering this runs after splice-idxs:leave
-                  :encoders {:map {:leave render}}}
-                 {:name :splice-idxs
-                  :encoders {:map {:enter
-                                   (fn [{:keys [idxs] :as spec}]
-                                     (if (seq idxs)
-                                       (-> spec
-                                           (update :path splice-real-indexes idxs)
-                                           ;; pass idxs on to children if they have none
-                                           (update :children
-                                                   (fn [children]
-                                                     (for [child children]
-                                                       (update child :idxs #(or % idxs))))))
-                                       spec))
-                                   :leave
-                                   (fn [spec]
-                                     ;; recalculate path info for specs with idxs on them 
-                                     (if (seq (:idxs spec))
-                                       (add-path-info spec)
-                                       ;; path info added at build time for concrete paths
-                                       spec))}}}))
-     ;; TODO: better solution
-     [:input {:type "submit" :name "submit" :value "Submit"}]]]))
+   (m/encode (m/deref field-spec-schema) source options
+             (mt/transformer
+               {:name :render-specs ;; due to transformer ordering this runs after splice-idxs:leave
+                :encoders {:map {:leave render}}}
+               {:name :wrap-root
+                :encoders {:map {:leave (fn [spec]
+                                          (if (:root? spec)
+                                            (-> (dissoc spec :children)
+                                                (assoc :type  ::form
+                                                       :child (render spec)))
+                                            spec))}}}
+               {:name :splice-idxs
+                :encoders {:map {:enter
+                                 (fn [{:keys [idxs] :as spec}]
+                                   (if (seq idxs)
+                                     (-> spec
+                                         (update :path splice-real-indexes idxs)
+                                         ;; pass idxs on to children if they have none
+                                         (update :children
+                                                 (fn [children]
+                                                   (for [child children]
+                                                     (update child :idxs #(or % idxs))))))
+                                     spec))
+                                 :leave
+                                 (fn [spec]
+                                   ;; recalculate path info for specs with idxs on them 
+                                   (if (seq (:idxs spec))
+                                     (add-path-info spec)
+                                     ;; path info added at build time for concrete paths
+                                     spec))}}}))))
 
 (defn render-form
   "Full pipeline"

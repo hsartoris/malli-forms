@@ -6,14 +6,14 @@
 
 (deftest munge-name-part-test
   (is (= "some%2Ffield"
-         (mf/munge-name-part "some/field")
-         (mf/munge-name-part :some/field)))
+         (#'mf/munge-name-part "some/field")
+         (#'mf/munge-name-part :some/field)))
   (is (= "some%3Cfield"
-         (mf/munge-name-part "some<field")))
+         (#'mf/munge-name-part "some<field")))
   (is (= "some%3Efield"
-         (mf/munge-name-part "some>field")))
+         (#'mf/munge-name-part "some>field")))
   (is (= "some_DOT_namespaced%2Fkeyword"
-         (mf/munge-name-part :some.namespaced/keyword))))
+         (#'mf/munge-name-part :some.namespaced/keyword))))
 
 
 (deftest path->name-test

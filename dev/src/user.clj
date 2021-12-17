@@ -28,8 +28,12 @@
    [:tags         {:optional true}  [:set [:string {:max 32}]]]
    [:ranges                         [:set {:min 1} ::range]]])
 
-(comment
-  (require '[malli-forms-test :as mft]
-           '[malli-forms-util-test :as mfut]
-           '[malli-forms.reitit-test :as mfrt]
-           '[malli-forms.collections-test :as mfct]))
+(defn load-tests
+  "Require test namespaces"
+  []
+  (doseq [r '[[malli-forms-test :as mft]
+              [malli-forms-util-test :as mfut]
+              [malli-forms.reitit-test :as mfrt]
+              [malli-forms.collections-test :as mfct]]]
+    (prn r)
+    (require r :reload)))

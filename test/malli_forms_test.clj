@@ -28,7 +28,7 @@
                            :required  true
                            :render?   true
                            :name      "root"
-                           :label     nil
+                           :label     "Root"
                            :id        "mf-root"}}
           [:< {::mf/spec {:path     [0]
                           :type     :number}}
@@ -45,7 +45,7 @@
                            :required  true
                            :render?   true
                            :name      "root"
-                           :label     nil
+                           :label     "Root"
                            :id        "mf-root"}}
           [:< {::mf/spec {:path     [0]
                           :type     :number}}
@@ -113,7 +113,17 @@
           :path   []}
          (-> [string? {::mf/name "custom-name"}]
              mf/collect-field-specs
-             (select-keys [:name :id :label :path])))))
+             (select-keys [:name :id :label :path]))))
+  (is (= {:minlength  1
+          :maxlength  10
+          :type       :text}
+         (-> [string? {:min 1, :max 10}]
+             mf/collect-field-specs
+             (select-keys [:minlength :maxlength :type]))
+         (-> [:string {:min 1, :max 10}]
+             mf/collect-field-specs
+             (select-keys [:minlength :maxlength :type])))
+      "String with min/max on malli gets translated to relevant HTML"))
            
 ;(deftest enum-test
 ;  (is (= [:select {:name    "root"

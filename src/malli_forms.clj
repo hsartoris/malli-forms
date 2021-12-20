@@ -308,12 +308,21 @@
   ;; TODO: figure out how to actually convert
   (assoc spec :pattern (str child)))
 
-(defmethod complete-field-spec :string
-  [schema spec _]
+;; ---- string schema handling
+(defn- add-min-max
+  "Add minlength and maxlength when min/max provided on string schema"
+  [schema spec]
   (let [#_:clj-kondo/ignore {:keys [min max]} (m/properties schema)]
     (cond-> spec
       min (assoc :minlength min)
       max (assoc :maxlength max))))
+
+(defmethod complete-field-spec :string
+  [schema spec _]
+  (add-min-max schema spec))
+(defmethod complete-field-spec 'string?
+  [schema spec _]
+  (add-min-max schema spec))
 
 ;; why though
 (defmethod complete-field-spec 'nil?

@@ -106,7 +106,14 @@
                          :value     nil
                          :render?   true})}
            (mf/collect-field-specs [:map [:email [string? {::mf/type :email}]]]))
-        "Type property on schema itself is respected")))
+        "Type property on schema itself is respected"))
+  (is (= {:name   "custom-name"
+          :id     "mf-custom-name"
+          :label  "Custom name"
+          :path   []}
+         (-> [string? {::mf/name "custom-name"}]
+             mf/collect-field-specs
+             (select-keys [:name :id :label :path])))))
            
 ;(deftest enum-test
 ;  (is (= [:select {:name    "root"

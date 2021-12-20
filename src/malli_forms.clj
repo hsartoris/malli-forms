@@ -170,6 +170,8 @@
         input-name (or (:name spec) (path->name path))]
     (-> (assoc spec :name input-name)
         (default :label   (path->label path))
+        ;; if still unset after above, try again with name
+        (default :label   (value->label input-name))
         ;; TODO: probably gensym for ids
         (default :id      (str "mf-" input-name)))))
 

@@ -21,20 +21,19 @@
          (mf/path->name [:my-map :some/field])))
   (is (= "something" (mf/path->name [:something]))))
 
-(deftest field-spec-test
+(deftest add-field-specs-test
   (is (= [:and {::mf/spec {:path      []
                            :type      :number
+                           :root?     true
                            :required  true
                            :render?   true
                            :name      "root"
                            :label     nil
                            :id        "mf-root"}}
           [:< {::mf/spec {:path     [0]
-                          :required true
                           :type     :number}}
            4]
           [:> {::mf/spec {:path     [1]
-                          :required true
                           :type     :number}}
            0]]
          (-> [:and [:< 4] [:> 0]]
@@ -42,13 +41,13 @@
              m/form)))
   (is (= [:and {::mf/spec {:path      []
                            :type      :number
+                           :root?     true
                            :required  true
                            :render?   true
                            :name      "root"
                            :label     nil
                            :id        "mf-root"}}
           [:< {::mf/spec {:path     [0]
-                          :required true
                           :type     :number}}
            4]
           [:fn {::mf/spec {:no-spec true
@@ -58,51 +57,55 @@
              m/form))
       "Function schema under and should not contribute to resulting spec"))
 
-(deftest single-input-test
-  (is (= [:input {:id       "mf-root"
-                  :name     "root"
-                  :required true
-                  :type     :email
-                  :label    nil
-                  :path     []
-                  :render?  true}]
-         (mf/render-form [string? {::mf/type :email}] nil)))
-  (is (= '[:fieldset
-           ([:label {:for "mf-password"} "Password"]
-            [:input {:id        "mf-password"
-                     :name      "password"
-                     :type      :text
-                     :required  true
-                     ;; TODO: should these make it to this point?
-                     :path      [:password]
-                     :label     "Password"
-                     :default   nil
-                     :render?   true}])]
-         (mf/render-form [:map [:password string?]] nil)))
-  (testing "Properties on schema vs on val schema"
-    (is (= '[:fieldset
-             ([:label {:for "mf-email"} "Email"]
-              [:input {:id        "mf-email"
-                       :name      "email"
+(deftest collect-field-specs-test
+  (is (= {:id       "mf-root"
+          :name     "root"
+          :required true
+          :type     :email
+          :label    nil
+          :path     []
+          :render?  true
+          :root?    true
+          :value    nil}
+         (mf/collect-field-specs [string? {::mf/type :email}])))
+  (is (= '{:type   ::mf/map
+           :root?  true
+           :path   []
+           :children ({:id        "mf-password"
+                       :name      "password"
                        :type      :text
                        :required  true
-                       :path      [:email]
-                       :label     "Email"
-                       :render?   true
-                       :default   nil}])]
-           (mf/render-form [:map [:email {::mf/type :email} string?]] nil))
+                       :path      [:password]
+                       :label     "Password"
+                       :value     nil
+                       :render?   true})}
+         (mf/collect-field-specs [:map [:password string?]])))
+  (testing "Properties on schema vs on val schema"
+    (is (= '{:type   ::mf/map
+             :root?  true
+             :path   []
+             :children ({:id        "mf-email"
+                         :name      "email"
+                         :type      :text
+                         :required  true
+                         :path      [:email]
+                         :label     "Email"
+                         :value     nil
+                         :render?   true})}
+           (mf/collect-field-specs [:map [:email {::mf/type :email} string?]]))
         "Type property on val schema is ignored")
-    (is (= '[:fieldset
-             ([:label {:for "mf-email"} "Email"]
-              [:input {:id        "mf-email"
-                       :name      "email"
-                       :type      :email
-                       :required  true
-                       :path      [:email]
-                       :label     "Email"
-                       :render?   true
-                       :default   nil}])]
-           (mf/render-form [:map [:email [string? {::mf/type :email}]]] nil))
+    (is (= '{:type   ::mf/map
+             :root?  true
+             :path   []
+             :children ({:id        "mf-email"
+                         :name      "email"
+                         :type      :email
+                         :required  true
+                         :path      [:email]
+                         :label     "Email"
+                         :value     nil
+                         :render?   true})}
+           (mf/collect-field-specs [:map [:email [string? {::mf/type :email}]]]))
         "Type property on schema itself is respected")))
            
 ;(deftest enum-test

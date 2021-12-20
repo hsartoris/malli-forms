@@ -15,8 +15,9 @@
    [:a [:set [:maybe :keyword]]]])
 
 (deftest add-specs-test
-  (is (= [:map {::mf/spec {:type ::mf/map
-                           :path []}}
+  (is (= [:map {::mf/spec {:type  ::mf/map
+                           :root? true
+                           :path  []}}
           [:a [:set {::mf/spec {:type ::mf/collection
                                 :path [:a]}}
                [:keyword {::mf/spec {:type :text
@@ -27,6 +28,7 @@
 
 (deftest collect-specs-test
   (is (= '{:type      ::mf/map
+           :root?     true
            :path      []
            :children  ({:type ::mf/collection
                         :path [:a]

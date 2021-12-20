@@ -140,10 +140,7 @@
   HTML input name"
   [path]
   (if (seq path)
-    (let [[head & tail] (mapv #(if (= % ::m/in)
-                                 ""
-                                 (munge-name-part %)) path)]
-          ;(mapv munge-name-part path)]
+    (let [[head & tail] (mapv munge-name-part path)]
       (apply str head (when tail
                         (mapv #(format "[%s]" %) tail))))
     "root"))

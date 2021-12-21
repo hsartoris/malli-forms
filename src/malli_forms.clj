@@ -330,8 +330,9 @@
                                           (contains? options ::use-child)))
                      child-idx (::use-child (m/properties schema))
                      stype (m/type schema)
+                     naive-spec (extract-field-spec schema)
                      root? (= path base-path)
-                     render? (and (not (#{::map ::collection} (schema-type->input-type stype)))
+                     render? (and (not (#{::map ::collection} (:type naive-spec)))
                                   (or root?
                                       (= (schema-type->input-type parent) ::collection)
                                       (= parent :map)
@@ -344,18 +345,21 @@
                                   (not (:optional (m/properties schema)))
                                   ;; otherwise just default to root is required
                                   (or root? (::required options))))]
-                 (m/-walk schema walker path
-                          (-> options
-                              (dissoc ::use-child)
-                              (assoc ::parent stype
-                                     ::render? render?
-                                     ::required reqd?)
-                              (cond->
-                                child-idx
-                                (assoc ::use-child child-idx)
+                 (->> (-> (dissoc options ::use-child)
+                          (assoc ::parent stype
+                                 ::naive-spec (cond-> naive-spec
+                                                render? (assoc :render? true)
+                                                reqd?   (assoc :required true))
+                                 ;; TODO: replace with just referencing naive parent spec
+                                 ::render?  render?
+                                 ::required reqd?)
+                          (cond->
+                            child-idx
+                            (assoc ::use-child child-idx)
 
-                                (and add-to-path (seq path))
-                                (update ::path conj (peek path)))))))
+                            (and add-to-path (seq path))
+                            (update ::path conj (peek path))))
+                      (m/-walk schema walker path))))
                                 
              (outer* [schema abs-path children
                       {::keys [use-child path] :as options}]
@@ -367,18 +371,14 @@
 
                  :else
                  ;; otherwise...
-                 (let [naive-spec (extract-field-spec schema)
-                       {::keys [render? required]} options
-                       naive-spec' (cond-> naive-spec
-                                     render?  (assoc :render? true)
-                                     required    (assoc :required true))
-                       spec (-> (complete-field-spec schema naive-spec' children)
+                 (let [naive-spec (::naive-spec options)
+                       spec (-> (complete-field-spec schema naive-spec children)
                                 ;; add path after complete-field-spec in case of
                                 ;; accidental override from child specs
                                 (assoc :path path
                                        :abs-path abs-path))
                        concrete-path? (not (some #(= % ::m/in) path))
-                       spec (if (and render? concrete-path?)
+                       spec (if (and (:render? spec) concrete-path?)
                               (add-path-info spec) spec)]
                    ;; TODO: remove children marked no-spec and send back to inner if any
                    (-> schema
@@ -430,6 +430,26 @@
     value
     errors))
 
+(defn explanation->error-map
+  "Produce a nested map of paths->errors"
+  [{:keys [errors]}]
+  (reduce
+    (fn [acc error]
+      (assoc-in acc (:path error) (assoc error :message (me/error-message error))))
+    {}
+    errors))
+
+(defn- error?
+  "is something a malli error?" ;; TODO
+  [err]
+  (contains? err :path))
+
+(defn get-errors
+  "Get errors from error-map for a given absolute path"
+  [error-map path]
+  (
+  
+
 (defn- wrap-handle-error
   "Provide a spec and a function; returns a function that accepts a value for
   the spec and checks if it is a ValueError. If so, updates the spec with the
@@ -442,8 +462,9 @@
       (value-handler (assoc spec :error (:error value)) (:value value))
       (value-handler spec value))))
 
-(def collect-specs
+(defn collect-specs
   "Transformer that collects field specs based on input value."
+  [error-map]
   {:name            :collect-specs
    :default-encoder {:compile (fn [schema _]
                                 ;; maybe store val props in special key on child?
@@ -472,13 +493,13 @@
                                           ;     (assoc spec' :children))))]
                                   (when (some? handler)
                                     {:leave (wrap-handle-error spec handler)})))}
-   :encoders  {;:set {:compile (fn [schema _]
-               ;                 (let [spec (::spec (m/properties schema))]
-               ;                   {:enter (fn [value]
-               ;                             (with-meta value {:original value}))
-               ;                    :leave (fn [value]
-               ;                             (prn (meta value))
-               ;                             value)}))}
+   :encoders  {:set {:compile (fn [schema _]
+                                (let [spec (::spec (m/properties schema))]
+                                  {:enter (fn [value]
+                                            (with-meta value {:original value}))
+                                   :leave (fn [value]
+                                            (prn (meta value))
+                                            value)}))}
                                    ;(wrap-handle-error
                                    ;  spec (fn [spec' value]
                                    ;         (

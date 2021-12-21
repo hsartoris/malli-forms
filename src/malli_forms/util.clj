@@ -36,6 +36,19 @@
      (->> (reduce set/intersection (first map-sets) (rest map-sets))
           (into {})))))
 
+(defn update-in*
+  "Like clojure.core/update-in, but works with sets as well"
+  [m ks f & args]
+  (letfn [(up [m ks f args]
+            (let [[k & ks] ks
+                  newval (if ks
+                           (up (get m k) ks f args)
+                           (apply f (get m k) args))]
+              (if (set? m)
+                (conj (disj m k) newval)
+                (assoc m k newval))))]
+    (up m ks f args)))
+
 ;; ------ name/label handling ------
 
 (defn- munge-name-part
@@ -61,7 +74,7 @@
 (defn value->label
   "Process a value into a form label"
   [v]
-  (some-> v str
+  (some-> v str not-empty
           (cond->
             (keyword? v) (subs 1))
           (str/replace #"[\/\._-]" " ")

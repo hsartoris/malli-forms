@@ -18,3 +18,16 @@
   (is (= "my-map[some%2Ffield]"
          (util/path->name [:my-map :some/field])))
   (is (= "something" (util/path->name [:something]))))
+
+(deftest update-in*-test
+  (is (= #{{:a 1, :b 2}}
+         (util/update-in* #{{:a 1}} [{:a 1}] assoc :b 2))
+      "Most basic case involving a set")
+  (is (= {:a {:b #{{:c 0
+                    :d 1}}}}
+         (util/update-in* {:a {:b #{{:c 0}}}} [:a :b {:c 0}] assoc :d 1))
+      "More complex nested case")
+  (is (= {:a [#{{:b [2]}}]}
+         (util/update-in* {:a [#{{:b [1]}}]} [:a 0 {:b [1]} :b 0] inc))
+      "Unreasonably complex case"))
+

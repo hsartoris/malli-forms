@@ -4,6 +4,7 @@
   (:require
     [malli-forms :as-alias mf]
     [malli-forms.util :refer [default
+                              path->label
                               path->name
                               props->attrs
                               value->label]]
@@ -20,10 +21,7 @@
   "Get a legend value for a collection based on its spec"
   [spec]
   (or (some-> spec ::m/name value->label)
-      (let [path-end (last (:path spec))]
-        (when (and (some? path-end)
-                   (not= path-end ::m/in))
-          (value->label path-end)))))
+      (path->label (:path spec))))
 
 (defmulti render
   "Renderer used when no theme is specified"
@@ -72,6 +70,10 @@
             sel? (assoc :selected true))
           label]))]))
 
+(defmethod render :submit
+  [spec]
+  [:input (props->attrs spec)])
+
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]
   [:fieldset
@@ -89,17 +91,14 @@
    (interpose [:br] (seq children))])
 
 (defmethod render ::mf/form
-  [{:keys [child] :as spec}]
-  [:div
-   ;; TODO: better system
+  [{:keys [children] :as spec}]
+  [:form
+   (-> (props->attrs spec)
+       (default :method "POST") ;; TODO: better way of defaulting
+       (assoc-in [:style :display] :table))
    [:style
-    "form { display: table; }
-    label, input { display: table-cell; margin-bottom: 10px; }
+    "label, input { display: table-cell; margin-bottom: 10px; }
     div.form-row { display: table-row; }
     label { padding-right: 10px; }"]
-   [:form
-    (default (props->attrs spec) :method "POST")
-    child
-    ;; TODO: better solution
-    [:input {:type "submit" :name "submit" :value "Submit"}]]])
+   (interpose [:br] (seq children))])
 

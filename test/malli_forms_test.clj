@@ -7,7 +7,6 @@
 (deftest add-field-specs-test
   (is (= [:and {::mf/spec {:path      []
                            :type      :number
-                           :root?     true
                            :required  true
                            :render?   true
                            :name      "root"
@@ -24,7 +23,6 @@
              m/form)))
   (is (= [:and {::mf/spec {:path      []
                            :type      :number
-                           :root?     true
                            :required  true
                            :render?   true
                            :name      "root"
@@ -40,6 +38,12 @@
              m/form))
       "Function schema under and should not contribute to resulting spec"))
 
+(defn- collect->unwrap
+  "Calls mf/collect-field-specs on schema, then unwraps expected form node to
+  inspect first child"
+  [schema]
+  (-> schema mf/collect-field-specs :children first))
+
 (deftest collect-field-specs-test
   (is (= {:id       "mf-root"
           :name     "root"
@@ -48,11 +52,9 @@
           :label    "Root"
           :path     []
           :render?  true
-          :root?    true
           :value    nil}
-         (mf/collect-field-specs [string? {::mf/type :email}])))
+         (collect->unwrap [string? {::mf/type :email}])))
   (is (= '{:type   ::mf/map
-           :root?  true
            :path   []
            :children ({:id        "mf-password"
                        :name      "password"
@@ -62,10 +64,9 @@
                        :label     "Password"
                        :value     nil
                        :render?   true})}
-         (mf/collect-field-specs [:map [:password string?]])))
+         (collect->unwrap [:map [:password string?]])))
   (testing "Properties on schema vs on val schema"
     (is (= '{:type   ::mf/map
-             :root?  true
              :path   []
              :children ({:id        "mf-email"
                          :name      "email"
@@ -75,10 +76,9 @@
                          :label     "Email"
                          :value     nil
                          :render?   true})}
-           (mf/collect-field-specs [:map [:email {::mf/type :email} string?]]))
+           (collect->unwrap [:map [:email {::mf/type :email} string?]]))
         "Type property on val schema is ignored")
     (is (= '{:type   ::mf/map
-             :root?  true
              :path   []
              :children ({:id        "mf-email"
                          :name      "email"
@@ -88,23 +88,23 @@
                          :label     "Email"
                          :value     nil
                          :render?   true})}
-           (mf/collect-field-specs [:map [:email [string? {::mf/type :email}]]]))
+           (collect->unwrap [:map [:email [string? {::mf/type :email}]]]))
         "Type property on schema itself is respected"))
   (is (= {:name   "custom-name"
           :id     "mf-custom-name"
           :label  "Custom name"
           :path   []}
          (-> [string? {::mf/name "custom-name"}]
-             mf/collect-field-specs
+             collect->unwrap
              (select-keys [:name :id :label :path]))))
   (is (= {:minlength  1
           :maxlength  10
           :type       :text}
          (-> [string? {:min 1, :max 10}]
-             mf/collect-field-specs
+             collect->unwrap
              (select-keys [:minlength :maxlength :type]))
          (-> [:string {:min 1, :max 10}]
-             mf/collect-field-specs
+             collect->unwrap
              (select-keys [:minlength :maxlength :type])))
       "String with min/max on malli gets translated to relevant HTML"))
 ;; TODO: boolean radio when required

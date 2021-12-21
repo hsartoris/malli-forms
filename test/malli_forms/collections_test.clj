@@ -16,7 +16,6 @@
 
 (deftest add-specs-test
   (is (= [:map {::mf/spec {:type  ::mf/map
-                           :root? true
                            :path  []}}
           [:a [:set {::mf/spec {:type ::mf/collection
                                 :path [:a]}}
@@ -27,16 +26,20 @@
          (-> s1 mf/add-field-specs m/form))))
 
 (deftest collect-specs-test
-  (is (= '{:type      ::mf/map
-           :root?     true
+  (is (= '{:type      ::mf/form
            :path      []
-           :children  ({:type ::mf/collection
-                        :path [:a]
-                        :children ({:type     :text
-                                    :render?  true
-                                    :path     [:a ::m/in]
-                                    :required true
-                                    :value    nil
-                                    :idxs     (0)})})}
+           :children  ({:type     ::mf/map
+                        :path     []
+                        :children ({:type ::mf/collection
+                                    :path [:a]
+                                    :children ({:type     :text
+                                                :render?  true
+                                                :path     [:a ::m/in]
+                                                :required true
+                                                :value    nil
+                                                :idxs     (0)})})}
+                       {:type   :submit
+                        :name   "submit"
+                        :value  "Submit"})}
          (mf/collect-field-specs s1 nil {::mf/auto-placeholder true}))))
 

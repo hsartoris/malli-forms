@@ -382,7 +382,6 @@
                                   (not (#{::map ::collection} (:type naive-spec))))
                      reqd? (and render? (or root? (::required options)))
                      naive-spec' (cond-> naive-spec
-                                   root?    (assoc :root? true)
                                    render?  (assoc :render? true)
                                    reqd?    (assoc :required true))
                      spec (-> (complete-field-spec schema naive-spec' children)
@@ -456,7 +455,17 @@
                                               (assoc spec :children (map value child-keys))
                                               ;; TODO: then what?
                                               value))}))}}})
-
+(defn- wrap-root
+  "Wrap the root node of a collected AST with one of type ::form but otherwise
+  the same spec as the root."
+  [spec]
+  (assoc spec
+         :type ::form
+         :children [spec
+                    ;; TODO: better way to do submit button?
+                    {:type  :submit
+                     :name  "submit"
+                     :value "Submit"}]))
 
 (defn collect-field-specs
   "Given a schema, a value, and options, prepare the schema via add-field-specs,
@@ -469,7 +478,8 @@
                                   (when auto-placeholder
                                     add-placeholders)
                                   mt/default-value-transformer
-                                  collect-specs)))))
+                                  collect-specs))
+       wrap-root)))
 
 (defn- splice-real-indexes
   "Given a path that contains one or more ::m/in and a sequence of actual
@@ -501,13 +511,6 @@
              (mt/transformer
                {:name :render-specs ;; due to transformer ordering this runs after splice-idxs:leave
                 :encoders {:map {:leave render}}}
-               {:name :wrap-root
-                :encoders {:map {:leave (fn [spec]
-                                          (if (:root? spec)
-                                            (-> (dissoc spec :children)
-                                                (assoc :type  ::form
-                                                       :child (render spec)))
-                                            spec))}}}
                {:name :splice-idxs
                 :encoders {:map {:enter
                                  (fn [{:keys [idxs] :as spec}]

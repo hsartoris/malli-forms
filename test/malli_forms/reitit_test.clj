@@ -27,7 +27,8 @@
                     ::range [:and {:doc "range-data with validation for first < last"
                                    ::mf/use-child 0}
                              ::range-data
-                             [:fn #(< (:first %) (:last %))]]}}
+                             [:fn {:error/message "first must be less than last"}
+                              #(< (:first %) (:last %))]]}}
    [:label
     [:string {:min 1, :max 64}]]
    [:preallocated {:default false}

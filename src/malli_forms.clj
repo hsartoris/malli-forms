@@ -322,90 +322,82 @@
    (let [base-path (or (and (m/-ref-schema? schema)
                             (some-> (m/-ref schema) vector))
                        [])]
-     (letfn [(inner [walker schema path options]
-               (let [stype (m/type schema)
-                     children (m/children schema)
-                     first-child (first children)]
-                 (or ;; when indicated, directly replace with target child - enter:1
-                     ;; TODO: ditch this in favor of pattern matching etc
-                     (when-some [child-idx (::use-child (m/properties schema))]
-                       (m/-inner walker (nth children child-idx) path options))
-                     ;; schema is a ref schema but not of type :ref specifically
-                     (when (and (m/-ref-schema? schema) (not= :ref stype))
-                       (let [ref-name (case stype ;; extraction rules for getting ref name
-                                        ::m/schema  (m/-ref schema)
-                                        :schema     (m/form first-child)
-                                        nil)]
-                         (m/-inner walker
-                                   ;; add ref name to properties when available
-                                   (cond-> (m/deref-all schema options)
-                                     ref-name (mu/update-properties assoc-in [::spec ::m/ref] ref-name))
-                                   path options)))
-                     ;; schema is an unwalked :ref schema - walk and mark
-                     (when (and (= :ref stype) (not (contains? (::m/walked-refs options) first-child)))
-                       (m/-inner walker
-                                 (-> (m/deref-all schema options)
-                                     ;; can always add ref name for :ref
-                                     (mu/update-properties assoc-in [::spec ::m/ref] (m/-ref schema)))
-                                 path
-                                 (update options ::m/walked-refs (fnil conj #{}) first-child)))
-                     ;; cases that hinge only on schema type
-                     (case stype
-                       :map ;; basically reproduce the malli source here
-                       ;; TODO: might be able to replace this with walking vals
-                       (m/-outer walker schema path
-                                 (m/-vmap
-                                   (fn [[k s]]
-                                     (let [props (m/-properties s)]
-                                       [k props
-                                        (m/-inner walker s
-                                                  (conj path k)
-                                                  (assoc options
-                                                         ::render? true
-                                                         ::required (not (:optional props))))]))
-                                   (m/-entries schema))
-                                 options)
-                       ;; TODO: good?
-                       :maybe
-                       (m/-walk first-child walker path (assoc options ::required false))
-                       ;; otherwise, recurse with options sometimes updated
-                       ;; TODO: terminating render is killing it for both
-                       ;; parent and children - only want to hit children
-                       (m/-walk schema walker path
-                                (update options ::render?
-                                        #(or (= (schema-type->input-type stype) ::collection)
-                                             (and % (not (#{:and :andn :or :orn} stype))))))))))
-             (outer [schema path children options]
-               (let [naive-spec (extract-field-spec schema)
+     (letfn [(inner* [walker schema path {::keys [parent] :as options}]
+               (let [;; TODO: elsewhere
+                     no-render-children #{:and :andn :or :orn}
+                     no-add-path (conj no-render-children :maybe ::m/schema :schema :ref ::m/val)
+                     add-to-path (not (or (no-add-path parent)
+                                          (contains? options ::use-child)))
+                     child-idx (::use-child (m/properties schema))
+                     stype (m/type schema)
                      root? (= path base-path)
-                     render? (and (or (::render? options) root?)
-                                  (not (#{::map ::collection} (:type naive-spec))))
-                     reqd? (and render? (or root? (::required options)))
-                     naive-spec' (cond-> naive-spec
-                                   render?  (assoc :render? true)
-                                   reqd?    (assoc :required true))
-                     spec (-> (complete-field-spec schema naive-spec' children)
-                              ;; add path after complete-field-spec in case of
-                              ;; accidental override from child specs
-                              (assoc :path path))
-                     ;; TODO: maybe set this as an options flag
-                     concrete-path? (not (some #(= % ::m/in) path))
-                     spec (if (and render? concrete-path?)
-                            (add-path-info spec) spec)]
-                 ;; TODO: remove children marked no-spec and send back to inner if any
-                 (-> schema
-                     (mu/update-properties assoc ::spec spec)
-                     (m/-set-children children))))]
+                     render? (and (not (#{::map ::collection} (schema-type->input-type stype)))
+                                  (or root?
+                                      (= (schema-type->input-type parent) ::collection)
+                                      (= parent :map)
+                                      (and (::render? options)
+                                           (not (no-render-children parent)))))
+                     reqd? (and render?
+                                (not= stype :maybe) ;; TODO: good approach?
+                                (if (= parent :map)
+                                  ;; val schema - use optional if set
+                                  (not (:optional (m/properties schema)))
+                                  ;; otherwise just default to root is required
+                                  (or root? (::required options))))]
+                 (m/-walk schema walker path
+                          (-> options
+                              (dissoc ::use-child)
+                              (assoc ::parent stype
+                                     ::render? render?
+                                     ::required reqd?)
+                              (cond->
+                                child-idx
+                                (assoc ::use-child child-idx)
+
+                                (and add-to-path (seq path))
+                                (update ::path conj (peek path)))))))
+                                
+             (outer* [schema abs-path children
+                      {::keys [use-child path] :as options}]
+               (cond
+                 use-child (nth children use-child)
+
+                 (#{:maybe :schema ::m/schema :ref ::m/val} (m/type schema))
+                 (first children)
+
+                 :else
+                 ;; otherwise...
+                 (let [naive-spec (extract-field-spec schema)
+                       {::keys [render? required]} options
+                       naive-spec' (cond-> naive-spec
+                                     render?  (assoc :render? true)
+                                     required    (assoc :required true))
+                       spec (-> (complete-field-spec schema naive-spec' children)
+                                ;; add path after complete-field-spec in case of
+                                ;; accidental override from child specs
+                                (assoc :path path
+                                       :abs-path abs-path))
+                       concrete-path? (not (some #(= % ::m/in) path))
+                       spec (if (and render? concrete-path?)
+                              (add-path-info spec) spec)]
+                   ;; TODO: remove children marked no-spec and send back to inner if any
+                   (-> schema
+                       (mu/update-properties assoc ::spec spec)
+                       (m/-set-children children)))))]
        (m/-inner
          (reify m/Walker
            (-accept [_ schema _ _] schema)
            (-inner [this schema path options]
-             (inner this schema path options))
+             (inner* this schema path options))
            (-outer [_ schema path children options]
-             (outer schema path children options)))
+             (outer* schema path children options)))
          (m/schema schema options)
          base-path
-         options)))))
+         (assoc options
+                ::path base-path
+                ::m/walk-refs true
+                ::m/walk-entry-vals true
+                ::m/walk-schema-refs true))))))
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholders
 (def add-placeholders
@@ -424,37 +416,85 @@
               :map-of {:enter (fn [value]
                                 (if (nil? value) {nil nil} value))}}})
 
+;; ------ schema to AST based on real values ------
+
+(defrecord ValueError [value error])
+
+(defn explanation->data
+  "Uses value and errors keys on an explanation, as produced by m/explain, to
+  produce a version of value with problem values wrapped in a ValueError."
+  [{:keys [value errors]}]
+  (reduce
+    (fn [out error]
+      (util/update-in* out (:in error) ->ValueError (assoc error :message (me/error-message error))))
+    value
+    errors))
+
+(defn- wrap-handle-error
+  "Provide a spec and a function; returns a function that accepts a value for
+  the spec and checks if it is a ValueError. If so, updates the spec with the
+  error, and calls the provided function with the spec and the value in the
+  ValueError. Otherwise, just calls provided function with unmodified spec and
+  value"
+  [spec value-handler]
+  (fn [value]
+    (if (instance? ValueError value)
+      (value-handler (assoc spec :error (:error value)) (:value value))
+      (value-handler spec value))))
+
 (def collect-specs
   "Transformer that collects field specs based on input value."
   {:name            :collect-specs
    :default-encoder {:compile (fn [schema _]
                                 ;; maybe store val props in special key on child?
-                                (let [props (m/properties schema)
-                                      spec (::spec props)]
-                                  (cond
-                                    (:render? spec)
-                                    {:leave (fn [value]
-                                              (assoc spec :value value))}
-
-                                    ;; TODO: actually perform splicing here?
-                                    (= ::collection (:type spec))
-                                    {:leave (fn [child-specs]
-                                              (->> child-specs
-                                                   (map-indexed
-                                                     (fn [idx child-spec]
-                                                       (update child-spec :idxs #(cons idx %))))
-                                                   (assoc spec :children)))})))}
-   :encoders  {:map {:compile (fn [schema _]
+                                (let [spec (::spec (m/properties schema))
+                                      handler
+                                      (cond
+                                        (:render? spec)
+                                        (fn [spec' value]
+                                          (assoc spec' :value value))
+                                        (= ::collection (:type spec))
+                                        (fn [spec' child-specs]
+                                          (->> child-specs
+                                               (map-indexed
+                                                 (fn [idx child-spec]
+                                                   (update child-spec :idxs #(cons idx %))))
+                                               (assoc spec' :children))))]
+                                          ;(->> (if (set? child-specs)
+                                          ;       ;; index into sets using value
+                                          ;       (map (fn [child-spec]
+                                          ;              (update child-spec :idxs #(cons (:value child-spec) %)))
+                                          ;            child-specs)
+                                          ;       (map-indexed
+                                          ;         (fn [idx child-spec]
+                                          ;           (update child-spec :idxs #(cons idx %)))
+                                          ;         child-specs))
+                                          ;     (assoc spec' :children))))]
+                                  (when (some? handler)
+                                    {:leave (wrap-handle-error spec handler)})))}
+   :encoders  {;:set {:compile (fn [schema _]
+               ;                 (let [spec (::spec (m/properties schema))]
+               ;                   {:enter (fn [value]
+               ;                             (with-meta value {:original value}))
+               ;                    :leave (fn [value]
+               ;                             (prn (meta value))
+               ;                             value)}))}
+                                   ;(wrap-handle-error
+                                   ;  spec (fn [spec' value]
+                                   ;         (
+               :map {:compile (fn [schema _]
                                 (let [child-keys (map #(nth % 0) (m/children schema))
                                       spec (::spec (m/properties schema))]
                                   {;; collect child specs, which are now in the vals
-                                   :leave (fn [value]
+                                   :leave
+                                   (wrap-handle-error
+                                     spec (fn [spec' value]
                                             (if (map? value)
                                               ;; preserve order
                                               ;; TODO: custom order via attributes
-                                              (assoc spec :children (map value child-keys))
+                                              (assoc spec' :children (map value child-keys))
                                               ;; TODO: then what?
-                                              value))}))}}})
+                                              value)))}))}}})
 (defn- wrap-root
   "Wrap the root node of a collected AST with one of type ::form but otherwise
   the same spec as the root."
@@ -480,6 +520,8 @@
                                   mt/default-value-transformer
                                   collect-specs))
        wrap-root)))
+
+;; ------ rendering AST to markup ------
 
 (defn- splice-real-indexes
   "Given a path that contains one or more ::m/in and a sequence of actual
@@ -538,6 +580,8 @@
   ([schema source options]
    (-> (collect-field-specs schema source options)
        (render-specs options))))
+
+;; ------ parsing ------
 
 (defn- unnest-seq
   "See unnest-seq-transformer"
@@ -613,3 +657,4 @@
 ;; - attempt parse macro
 ;; - attempt parse=>re-render form macro built on previous
 ;; - optional reitit coercion module
+;; - ring-anti-forgery

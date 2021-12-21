@@ -6,33 +6,39 @@
 
 (deftest add-field-specs-test
   (is (= [:and {::mf/spec {:path      []
+                           :abs-path  []
                            :type      :number
                            :required  true
                            :render?   true
                            :name      "root"
                            :label     "Root"
                            :id        "mf-root"}}
-          [:< {::mf/spec {:path     [0]
+          [:< {::mf/spec {:path     []
+                          :abs-path [0]
                           :type     :number}}
            4]
-          [:> {::mf/spec {:path     [1]
+          [:> {::mf/spec {:path     []
+                          :abs-path [1]
                           :type     :number}}
            0]]
          (-> [:and [:< 4] [:> 0]]
              mf/add-field-specs
              m/form)))
   (is (= [:and {::mf/spec {:path      []
+                           :abs-path  []
                            :type      :number
                            :required  true
                            :render?   true
                            :name      "root"
                            :label     "Root"
                            :id        "mf-root"}}
-          [:< {::mf/spec {:path     [0]
+          [:< {::mf/spec {:path     []
+                          :abs-path [0]
                           :type     :number}}
            4]
           [:fn {::mf/spec {:no-spec true
-                           :path    [1]}} nat-int?]] ;; ignore that this is a schema too - just a common reference function
+                           :path    []
+                           :abs-path [1]}} nat-int?]] ;; ignore that this is a schema too - just a common reference function
          (-> [:and [:< 4] [:fn nat-int?]]
              mf/add-field-specs
              m/form))
@@ -51,16 +57,19 @@
           :type     :email
           :label    "Root"
           :path     []
+          :abs-path     []
           :render?  true
           :value    nil}
          (collect->unwrap [string? {::mf/type :email}])))
   (is (= '{:type   ::mf/map
            :path   []
+           :abs-path   []
            :children ({:id        "mf-password"
                        :name      "password"
                        :type      :text
                        :required  true
                        :path      [:password]
+                       :abs-path  [:password]
                        :label     "Password"
                        :value     nil
                        :render?   true})}
@@ -68,11 +77,13 @@
   (testing "Properties on schema vs on val schema"
     (is (= '{:type   ::mf/map
              :path   []
+             :abs-path   []
              :children ({:id        "mf-email"
                          :name      "email"
                          :type      :text
                          :required  true
                          :path      [:email]
+                         :abs-path  [:email]
                          :label     "Email"
                          :value     nil
                          :render?   true})}
@@ -80,11 +91,13 @@
         "Type property on val schema is ignored")
     (is (= '{:type   ::mf/map
              :path   []
+             :abs-path   []
              :children ({:id        "mf-email"
                          :name      "email"
                          :type      :email
                          :required  true
                          :path      [:email]
+                         :abs-path  [:email]
                          :label     "Email"
                          :value     nil
                          :render?   true})}

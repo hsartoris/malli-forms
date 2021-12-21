@@ -1,4 +1,5 @@
-{:deps {metosin/malli {:mvn/version "0.7.0"}}
+{:deps {metosin/malli {:mvn/version "0.7.0"}
+        org.clojure/clojure {:mvn/version "1.11.0-alpha3"}}
  :aliases {:test              {:extra-paths ["test"]
                                :extra-deps {metosin/reitit {:mvn/version "0.5.15"}
                                             http-kit/http-kit {:mvn/version "2.5.3"}

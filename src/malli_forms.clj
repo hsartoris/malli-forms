@@ -1,14 +1,16 @@
 (ns malli-forms
   (:require
-    [clojure.set :as set]
-    [clojure.string :as str]
+    [malli-forms.render.table :as table]
+    [malli-forms.util :as util :refer [default
+                                       path->name
+                                       path->label
+                                       unqualify
+                                       value->label]]
     [malli.core :as m]
     [malli.error :as me]
     [malli.registry :as mr]
     [malli.transform :as mt]
-    [malli.util :as mu]
-    ;; TODO
-    [reitit.impl :refer [url-encode #_url-decode]]))
+    [malli.util :as mu]))
 
 (def form-ns
   "Namespace of keys that control behavior on field generation for schemas"
@@ -93,75 +95,6 @@
 (def field-spec-schema
   "Schema for a field spec"
   (m/schema ::field-spec {:registry registry}))
-
-;; ------ utilities -------
-
-(defn- unqualify
-  ":some/kw -> :kw"
-  [kw]
-  (keyword (name kw)))
-
-(defn- default
-  "If `k` is not set in `m`, set it to `v`."
-  [m k v]
-  (if (some? (get m k)) m (assoc m k v)))
-
-(def ^:private sorted-set-by-count
-  (sorted-set-by
-    (fn [x y]
-      (compare [(count x) x] [(count y) y]))))
-
-;; TODO: test
-(defn- intersect-maps
-  "Returns a map that contains only those entries that are present in every
-  map provided."
-  ([m] m)
-  ([m1 m2]
-   (into {} (set/intersection (set m1) (set m2))))
-  ([m1 m2 & maps]
-   ;; TODO: doubtless wildly suboptimal, not that it's all that important
-   (let [map-sets (into sorted-set-by-count (map set) (conj maps m1 m2))]
-     (->> (reduce set/intersection (first map-sets) (rest map-sets))
-          (into {})))))
-
-;; ------ name/label handling ------
-
-(defn- munge-name-part
-  "Munge a part of a field name into an HTML-compatible string"
-  [s]
-  ;; TODO: not very robust
-  (cond
-    (keyword? s) (recur (subs (str s) 1))
-    (not (string? s)) (recur (str s))
-    :else (str/replace (url-encode s) "." "_DOT_")))
-
-(defn path->name
-  "Takes a path to a field in a nested data structure and produces a suitable
-  HTML input name"
-  [path]
-  (if (seq path)
-    (let [[head & tail] (mapv munge-name-part path)]
-      (apply str head (when tail
-                        (mapv #(format "[%s]" %) tail))))
-    "root"))
-
-;; TODO: test
-(defn value->label
-  "Process a value into a form label"
-  [v]
-  (some-> v str
-          (cond->
-            (keyword? v) (subs 1))
-          (str/replace #"[\/\._-]" " ")
-          (str/replace #"\bid(?:\b|\z)" "ID")
-          (#(str (.toUpperCase (subs % 0 1)) (subs % 1)))))
-
-(defn path->label
-  "Takes a path to a field in a nested data structure and attempts to produce
-  a human-readable label"
-  [path]
-  (when (seq path)
-    (value->label (last path))))
 
 (defn- add-path-info
   "Add name, id, and label to a spec, based on a path already added to it"
@@ -291,10 +224,10 @@
 
 (defmethod complete-field-spec :or
   [_ spec children]
-  (->> children schemas->specs intersect-maps (into spec)))
+  (->> children schemas->specs util/intersect-maps (into spec)))
 (defmethod complete-field-spec :and
   [_ spec children]
-  (->> children schemas->specs intersect-maps (into spec)))
+  (->> children schemas->specs util/intersect-maps (into spec)))
 
 (defmethod complete-field-spec :maybe
   ;; any properties set explicitly on this schema, under those of child, and
@@ -538,23 +471,6 @@
                                   mt/default-value-transformer
                                   collect-specs)))))
 
-
-(defn- props->attrs
-  "Convert field spec from a schema into an attribute map for an input"
-  [{:keys [attributes required selected value] :as spec}]
-  (cond-> (dissoc spec :attributes :required :selected :value)
-    (true? required)    (assoc :required true)
-    (some? value)       (assoc :value value)
-    (some? attributes)  (conj attributes)
-    (true? selected)    (assoc :selected true)))
-
-(defn- labeled-input
-  [{:keys [id label] :as field-spec}]
-  [:div.form-row
-   (when label
-     [:label {:for id} label])
-   [:input (props->attrs field-spec)]])
-
 (defn- splice-real-indexes
   "Given a path that contains one or more ::m/in and a sequence of actual
   indexes, replace the first ::m/in with the first index, etc."
@@ -576,99 +492,11 @@
       ;; don't replace, just put on stack
       :else (recur (conj out head) tail idxs))))
 
-(defn- coll-legend
-  "Get a legend value for a collection based on its spec"
-  [spec]
-  (or (some-> spec ::m/name value->label)
-      (let [path-end (last (:path spec))]
-        (when (and (some? path-end)
-                   (not= path-end ::m/in))
-          (value->label path-end)))))
-
-
-(defmulti default-renderer
-  "Renderer used when no theme is specified"
-  :type)
-
-(defmethod default-renderer :default
-  [spec]
-  (labeled-input spec))
-
-;(defmethod default-renderer :checkbox
-;  [spec]
-;  ;; TODO
-;  (labeled-input (assoc spec :required false)))
-
-(defmethod default-renderer :radio
-  [{:keys [options label value path] :as spec}]
-  ;(prn path options)
-  [:fieldset
-   (when label
-     [:legend label])
-   (for [option options
-         :let [label (value->label option)
-               id (path->name (conj path option))
-               sel? (= option value)]]
-     (list
-       [:label {:for id} label]
-       [:input (props->attrs (assoc spec
-                                    :selected sel?
-                                    :id       id
-                                    :value    option))]))])
-
-(defmethod default-renderer :select
-  [{:keys [options label #_:clj-kondo/ignore name value id] :as spec}]
-  (list
-    (when label
-      [:label {:for id} label])
-    [:select (dissoc spec :label :options :value)
-     (list
-       (when-not (some #(= value %) options) ;; nothing selected
-         [:option {:selected true :value "" :disabled true} "Select an option"])
-       (for [option options
-             :let [label  (value->label option)
-                   sel?   (= option value)]]
-         [:option 
-          (cond-> {:value option}
-            sel? (assoc :selected true))
-          label]))]))
-
-(defmethod default-renderer ::collection
-  [{:keys [children] :as spec}]
-  [:fieldset
-   (when-some [l (coll-legend spec)]
-     [:legend l])
-   (interpose [:br] (seq children))])
-
-;; TODO: basically the same as above, but otherwise impossible to distinguish
-;; in collect-field-specs
-(defmethod default-renderer ::map
-  [{:keys [children] :as spec}]
-  [:fieldset
-   (when-some [l (coll-legend spec)]
-     [:legend l])
-   (interpose [:br] (seq children))])
-
-(defmethod default-renderer ::form
-  [{:keys [child] :as spec}]
-  [:div
-   ;; TODO: better system
-   [:style
-    "form { display: table; }
-    label, input { display: table-cell; margin-bottom: 10px; }
-    div.form-row { display: table-row; }
-    label { padding-right: 10px; }"]
-   [:form
-    (default (props->attrs spec) :method "POST")
-    child
-    ;; TODO: better solution
-    [:input {:type "submit" :name "submit" :value "Submit"}]]])
-
 (defn render-specs
   "Given a value as produced by collect-field-specs and options, renders fields
   defined by AST into markup"
   ([source] (render-specs source {}))
-  ([source {:keys [render] :or {render default-renderer} :as options}]
+  ([source {:keys [render] :or {render table/render} :as options}]
    (m/encode (m/deref field-spec-schema) source options
              (mt/transformer
                {:name :render-specs ;; due to transformer ordering this runs after splice-idxs:leave

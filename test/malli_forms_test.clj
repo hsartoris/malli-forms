@@ -4,23 +4,6 @@
     [malli-forms :as mf]
     [malli.core :as m]))
 
-(deftest munge-name-part-test
-  (is (= "some%2Ffield"
-         (#'mf/munge-name-part "some/field")
-         (#'mf/munge-name-part :some/field)))
-  (is (= "some%3Cfield"
-         (#'mf/munge-name-part "some<field")))
-  (is (= "some%3Efield"
-         (#'mf/munge-name-part "some>field")))
-  (is (= "some_DOT_namespaced%2Fkeyword"
-         (#'mf/munge-name-part :some.namespaced/keyword))))
-
-
-(deftest path->name-test
-  (is (= "my-map[some%2Ffield]"
-         (mf/path->name [:my-map :some/field])))
-  (is (= "something" (mf/path->name [:something]))))
-
 (deftest add-field-specs-test
   (is (= [:and {::mf/spec {:path      []
                            :type      :number
@@ -62,7 +45,7 @@
           :name     "root"
           :required true
           :type     :email
-          :label    nil
+          :label    "Root"
           :path     []
           :render?  true
           :root?    true
@@ -124,6 +107,7 @@
              mf/collect-field-specs
              (select-keys [:minlength :maxlength :type])))
       "String with min/max on malli gets translated to relevant HTML"))
+;; TODO: boolean radio when required
            
 ;(deftest enum-test
 ;  (is (= [:select {:name    "root"

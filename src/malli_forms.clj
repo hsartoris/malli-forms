@@ -433,45 +433,6 @@
 
 ;; ------ schema to AST based on real values ------
 
-(defrecord ValueError [value error])
-
-(defn explanation->data
-  "Uses value and errors keys on an explanation, as produced by m/explain, to
-  produce a version of value with problem values wrapped in a ValueError."
-  [{:keys [value errors]}]
-  (reduce
-    (fn [out error]
-      (util/update-in* out (:in error) ->ValueError (assoc error :message (me/error-message error))))
-    value
-    errors))
-
-(defn explanation->error-map
-  "Produce a nested map of paths->errors"
-  [{:keys [errors]}]
-  (reduce
-    (fn [acc error]
-      (assoc-in acc (:path error) (assoc error :message (me/error-message error))))
-    {}
-    errors))
-
-;(defn- error?
-;  "is something a malli error?" ;; TODO
-;  [err]
-;  (contains? err :path))
-  
-
-(defn- wrap-handle-error
-  "Provide a spec and a function; returns a function that accepts a value for
-  the spec and checks if it is a ValueError. If so, updates the spec with the
-  error, and calls the provided function with the spec and the value in the
-  ValueError. Otherwise, just calls provided function with unmodified spec and
-  value"
-  [spec value-handler]
-  (fn [value]
-    (if (instance? ValueError value)
-      (value-handler (assoc spec :error (:error value)) (:value value))
-      (value-handler spec value))))
-
 (def collect-specs
   "Transformer that collects field specs based on input value."
   {:name            :collect-specs
@@ -561,13 +522,6 @@
                                               add-placeholders)
                                             mt/default-value-transformer))
          prepped (encode source)
-         ;indexed (index-specs 
-         ;subschemas (mu/subschemas schema')
-         ;indexed-specs (reduce
-         ;                (fn [out {:keys [in schema]}]
-         ;                  (update-in out in assoc ::spec (::spec (m/properties schema))))
-         ;                {}
-         ;                subschemas)
          indexed-specs (index-specs schema')
          path->spec (fn [path]
                       (loop [cursor indexed-specs
@@ -577,20 +531,11 @@
                           (some-> (some cursor [head ::m/in])
                                   (recur tail)))))
          path->errors (index-errors errors)]
-         ;path->error (into {}
-         ;                  (map (fn [{:keys [in] :as error}]
-         ;                         [in (assoc error :message
-         ;                                    (me/error-message error))]))
-         ;                  errors)]
-     ;(prn path->error)
-     ;(assert (= (count subschemas) (count path->spec)))
      (util/pathwalk
        (fn [item path]
          (let [errors (path->errors path)
                spec (cond-> (path->spec path)
                       (some? errors) (assoc :errors errors))]
-           (when (some? errors)
-             (println item \newline errors \newline path \newline spec \newline "-----"))
            (cond
              (= ::map (:type spec))
              (assoc spec :children (map item (:order spec)))
@@ -748,13 +693,6 @@
                                             (:errors error)
                                             options)))
            map->ParseFailure)
-       ;(map->ParseFailure
-       ;  {:schema       schema
-       ;   :data         data
-       ;   :options      options
-       ;   :decoded      decoded
-       ;   :explanation  error
-       ;   :humanized    (me/humanize error)})
        decoded))))
 
 ;; remaining:

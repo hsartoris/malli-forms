@@ -124,7 +124,9 @@
   a human-readable label"
   [path]
   (when (seq path)
-    (value->label (last path))))
+    (let [final (last path)]
+      (when (not= :malli.core/in final)
+        (value->label final)))))
 
 (defn props->attrs
   "Convert field spec from a schema into an attribute map for an input"

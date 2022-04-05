@@ -6,7 +6,8 @@
                                             ring/ring-core          {:mvn/version "1.9.4"}
                                             ring/ring-jetty-adapter {:mvn/version "1.9.4"}
                                             rum/rum {:mvn/version "0.12.8"
-                                                     :exclusions [cljsjs/react cljsjs/react-dom]}}}
+                                                     :exclusions [cljsjs/react cljsjs/react-dom]}
+                                            criterium/criterium {:mvn/version "0.4.6"}}}
            :dev               {:extra-paths ["dev/src"]}
            :repl/rebel        {:extra-deps {nrepl/nrepl                 {:mvn/version "0.8.3"}
                                             cider/cider-nrepl           {:mvn/version "0.27.3"}

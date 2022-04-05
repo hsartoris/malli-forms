@@ -70,14 +70,17 @@
    [:map {:doc "Field spec for a parent of multiple other field specs"}
     [:path ::path]
     [:children [:sequential [:ref ::field-spec]]]]
+
    ::field-spec.form
    [:map {:doc "Field spec for a root element"}
     [:path ::path]
     [:children [:sequential [:ref ::field-spec]]]]
+
    ::field-spec.map
    [:map {:doc "Field spec for a map, which is a special case"}
     [:path ::path]
     [:children [:sequential [:ref ::field-spec]]]]
+
    ::field-spec
    [:multi {:dispatch :type}
     [::collection ::field-spec.collection]
@@ -531,6 +534,16 @@
     {}
     (mu/subschemas schema)))
 
+(defn- index-errors
+  "Provide a seq of errors as produced by m/explain, yielding a map of path to
+  errors for that path, where each error will have a :message field from
+  me/error-message."
+  [errors]
+  (reduce (fn [index {:keys [in] :as error}]
+            (update index in (fnil conj []) (assoc error :message (me/error-message error))))
+          {}
+          errors))
+
 (defn collect-field-specs
   "Given a schema, a value, and options, prepare the schema via add-field-specs,
   then encode it with collect-specs into a renderable AST"
@@ -563,19 +576,21 @@
                           (get cursor ::spec)
                           (some-> (some cursor [head ::m/in])
                                   (recur tail)))))
-         path->error (into {}
-                           (map (fn [{:keys [in] :as error}]
-                                  [in (assoc error :message
-                                             (me/error-message error))]))
-                           errors)]
-     (prn path->error)
+         path->errors (index-errors errors)]
+         ;path->error (into {}
+         ;                  (map (fn [{:keys [in] :as error}]
+         ;                         [in (assoc error :message
+         ;                                    (me/error-message error))]))
+         ;                  errors)]
+     ;(prn path->error)
      ;(assert (= (count subschemas) (count path->spec)))
      (util/pathwalk
        (fn [item path]
-         (let [error (path->error path)
+         (let [errors (path->errors path)
                spec (cond-> (path->spec path)
-                      (some? error) (assoc :error error))]
-           (println item \newline error \newline path \newline spec \newline "-----")
+                      (some? errors) (assoc :errors errors))]
+           (when (some? errors)
+             (println item \newline errors \newline path \newline spec \newline "-----"))
            (cond
              (= ::map (:type spec))
              (assoc spec :children (map item (:order spec)))
@@ -650,8 +665,9 @@
   "Full pipeline"
   ([schema] (render-form schema nil))
   ([schema source] (render-form schema source {}))
-  ([schema source options]
-   (-> (collect-field-specs schema source options)
+  ([schema source options] (render-form schema source nil options))
+  ([schema source errors options]
+   (-> (collect-field-specs schema source errors options)
        wrap-root
        (render-specs options))))
 
@@ -698,7 +714,15 @@
 (def ^:private parse-transformer
   (apply mt/transformer parse-stack))
 
-(defrecord ParseFailure [schema data options decoded explanation humanized])
+(defrecord ParseFailure
+  [schema value errors  ;; these three from m/explain
+   options source       ;; these from provided input
+   form]) ;; form is a delay that yields the form with errors
+
+(defn parse-failed?
+  "Is x an instance of ParseFailure"
+  [x]
+  (instance? ParseFailure x))
 
 (defn parse
   "Simple parse and validate using schema against data. Throws on failure."
@@ -716,13 +740,21 @@
                                       :options  options}
                                      e))))]
      (if-some [error (explain decoded)]
-       (map->ParseFailure
-         {:schema       schema
-          :data         data
-          :options      options
-          :decoded      decoded
-          :explanation  error
-          :humanized    (me/humanize error)})
+       (-> error
+           (assoc :source data
+                  :options options
+                  :form (delay (render-form schema
+                                            (:value error)
+                                            (:errors error)
+                                            options)))
+           map->ParseFailure)
+       ;(map->ParseFailure
+       ;  {:schema       schema
+       ;   :data         data
+       ;   :options      options
+       ;   :decoded      decoded
+       ;   :explanation  error
+       ;   :humanized    (me/humanize error)})
        decoded))))
 
 ;; remaining:

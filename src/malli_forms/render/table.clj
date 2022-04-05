@@ -10,12 +10,19 @@
                               value->label]]
     [malli.core :as-alias m]))
 
+(defn- error-span
+  "Get zero or more spans containings errors for the given field spec"
+  [{:keys [errors]}]
+  (for [error errors]
+    [:span.error (:message error)]))
+
 (defn- labeled-input
   [{:keys [id label] :as field-spec}]
   [:div.form-row
    (when label
      [:label {:for id} label])
-   [:input (props->attrs field-spec)]])
+   [:input (props->attrs field-spec)]
+   (error-span field-spec)])
 
 (defn- coll-legend
   "Get a legend value for a collection based on its spec"
@@ -39,7 +46,7 @@
 (defmethod render :radio
   [{:keys [options label value path] :as spec}]
   ;(prn path options)
-  (prn path value)
+  ;(prn path value)
   [:fieldset
    (when label
      [:legend label])
@@ -52,7 +59,8 @@
        [:input (props->attrs (assoc spec
                                     :checked  sel?
                                     :id       id
-                                    :value    (str option)))]))])
+                                    :value    (str option)))]))
+   (error-span spec)])
 
 (defmethod render :select
   [{:keys [options label #_:clj-kondo/ignore name value id] :as spec}]
@@ -69,7 +77,8 @@
          [:option 
           (cond-> {:value option}
             sel? (assoc :selected true))
-          label]))]))
+          label]))]
+    (error-span spec)))
 
 (defmethod render :submit
   [spec]
@@ -77,10 +86,12 @@
 
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]
+  (prn spec)
   [:fieldset
    (when-some [l (coll-legend spec)]
      [:legend l])
-   (interpose [:br] (seq children))])
+   (interpose [:br] (seq children))
+   (error-span spec)])
 
 ;; TODO: basically the same as above, but otherwise impossible to distinguish
 ;; in collect-field-specs
@@ -89,7 +100,8 @@
   [:fieldset
    (when-some [l (coll-legend spec)]
      [:legend l])
-   (interpose [:br] (seq children))])
+   (interpose [:br] (seq children))
+   (error-span spec)])
 
 (defmethod render ::mf/form
   [{:keys [children] :as spec}]
@@ -100,6 +112,7 @@
    [:style
     "label, input { display: table-cell; margin-bottom: 10px; }
     div.form-row { display: table-row; }
-    label { padding-right: 10px; }"]
+    label { padding-right: 10px; }
+    span.error { font-size: 80%; color: red; }"]
    (interpose [:br] (seq children))])
 

@@ -39,6 +39,7 @@
 (defmethod render :radio
   [{:keys [options label value path] :as spec}]
   ;(prn path options)
+  (prn path value)
   [:fieldset
    (when label
      [:legend label])
@@ -49,7 +50,7 @@
      (list
        [:label {:for id} label]
        [:input (props->attrs (assoc spec
-                                    :selected sel?
+                                    :checked  sel?
                                     :id       id
                                     :value    (str option)))]))])
 

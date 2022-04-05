@@ -49,6 +49,44 @@
                 (assoc m k newval))))]
     (up m ks f args)))
 
+;; ------ walking, with inspiration from https://gist.github.com/stuarthalloway/b6d1c8766c747fd81018
+
+(defprotocol PathWalkable
+  (inner [form f path-to-form]
+         "Replace subforms of form with (f subform path-to-subform), where
+         path-to-subform is built from path-to-form"))
+
+(defn pathwalk
+  "Postwalk form, replacing subforms with (f subform path-to-subform)"
+  ([f form] (pathwalk f form []))
+  ([f form path]
+   (f (inner form f path) path)))
+
+(extend-protocol PathWalkable
+  java.util.List
+  (inner [form f path]
+    (map-indexed
+      (fn [idx subform]
+        (pathwalk f subform (conj path idx)))
+      form))
+  java.util.Map
+  (inner [form f path]
+    (reduce-kv (fn [out k v]
+                 (assoc out k (pathwalk f v (conj path k))))
+               form form))
+  java.util.Set
+  (inner [form f path]
+    (into (empty form)
+          (map #(pathwalk f % (conj path %)))
+          form))
+  ;; bottom out on Object/nil - will be wrapped in call to (f path subform),
+  ;; so just yield form unchanged
+  java.lang.Object
+  (inner [form _ _] form)
+  nil
+  (inner [_ _ _] nil))
+
+
 ;; ------ name/label handling ------
 
 (defn- munge-name-part

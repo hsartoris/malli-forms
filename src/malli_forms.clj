@@ -129,6 +129,7 @@
                :re]
     :checkbox [boolean?
                :boolean
+               ;; TODO: false? is sort of nonsensical
                false?
                true?]
     :url      [url?]
@@ -322,6 +323,9 @@
    (let [base-path (or (and (m/-ref-schema? schema)
                             (some-> (m/-ref schema) vector))
                        [])]
+     ;; TODO TODO
+     ;; TODO: use mu/path->in to remove need for all this shenanigans
+     ;; - use-child marks parent as no render, child as render
      (letfn [(inner* [walker schema path {::keys [parent] :as options}]
                (let [;; TODO: elsewhere
                      no-render-children #{:and :andn :or :orn}
@@ -378,8 +382,16 @@
                                 (assoc :path path
                                        :abs-path abs-path))
                        concrete-path? (not (some #(= % ::m/in) path))
-                       spec (if (and (:render? spec) concrete-path?)
-                              (add-path-info spec) spec)]
+                       spec (cond-> spec
+                              (and (:render? spec) concrete-path?)
+                              add-path-info
+
+                              ;; TODO: probably remove
+                              concrete-path? (assoc :concrete-path? true)
+
+                              ;; TODO: better ordering control
+                              (= ::map (:type spec))
+                              (assoc :order (map #(nth % 0) children)))]
                    ;; TODO: remove children marked no-spec and send back to inner if any
                    (-> schema
                        (mu/update-properties assoc ::spec spec)
@@ -439,15 +451,10 @@
     {}
     errors))
 
-(defn- error?
-  "is something a malli error?" ;; TODO
-  [err]
-  (contains? err :path))
-
-(defn get-errors
-  "Get errors from error-map for a given absolute path"
-  [error-map path]
-  (
+;(defn- error?
+;  "is something a malli error?" ;; TODO
+;  [err]
+;  (contains? err :path))
   
 
 (defn- wrap-handle-error
@@ -462,9 +469,8 @@
       (value-handler (assoc spec :error (:error value)) (:value value))
       (value-handler spec value))))
 
-(defn collect-specs
+(def collect-specs
   "Transformer that collects field specs based on input value."
-  [error-map]
   {:name            :collect-specs
    :default-encoder {:compile (fn [schema _]
                                 ;; maybe store val props in special key on child?
@@ -472,50 +478,28 @@
                                       handler
                                       (cond
                                         (:render? spec)
-                                        (fn [spec' value]
-                                          (assoc spec' :value value))
+                                        #(assoc spec :value %)
                                         (= ::collection (:type spec))
-                                        (fn [spec' child-specs]
+                                        (fn [child-specs]
                                           (->> child-specs
                                                (map-indexed
                                                  (fn [idx child-spec]
                                                    (update child-spec :idxs #(cons idx %))))
-                                               (assoc spec' :children))))]
-                                          ;(->> (if (set? child-specs)
-                                          ;       ;; index into sets using value
-                                          ;       (map (fn [child-spec]
-                                          ;              (update child-spec :idxs #(cons (:value child-spec) %)))
-                                          ;            child-specs)
-                                          ;       (map-indexed
-                                          ;         (fn [idx child-spec]
-                                          ;           (update child-spec :idxs #(cons idx %)))
-                                          ;         child-specs))
-                                          ;     (assoc spec' :children))))]
+                                               (assoc spec :children))))]
                                   (when (some? handler)
-                                    {:leave (wrap-handle-error spec handler)})))}
-   :encoders  {:set {:compile (fn [schema _]
-                                (let [spec (::spec (m/properties schema))]
-                                  {:enter (fn [value]
-                                            (with-meta value {:original value}))
-                                   :leave (fn [value]
-                                            (prn (meta value))
-                                            value)}))}
-                                   ;(wrap-handle-error
-                                   ;  spec (fn [spec' value]
-                                   ;         (
-               :map {:compile (fn [schema _]
-                                (let [child-keys (map #(nth % 0) (m/children schema))
-                                      spec (::spec (m/properties schema))]
+                                    {:leave handler})))}
+   :encoders  {:map {:compile (fn [schema _]
+                                (let [spec (::spec (m/properties schema))
+                                      order (:order spec)]
                                   {;; collect child specs, which are now in the vals
                                    :leave
-                                   (wrap-handle-error
-                                     spec (fn [spec' value]
-                                            (if (map? value)
-                                              ;; preserve order
-                                              ;; TODO: custom order via attributes
-                                              (assoc spec' :children (map value child-keys))
-                                              ;; TODO: then what?
-                                              value)))}))}}})
+                                   (fn [value]
+                                     (if (map? value)
+                                       ;; preserve order
+                                       ;; TODO: custom order via attributes
+                                       (assoc spec :children (map value order))
+                                       ;; TODO: then what?
+                                       value))}))}}})
 (defn- wrap-root
   "Wrap the root node of a collected AST with one of type ::form but otherwise
   the same spec as the root."
@@ -528,19 +512,87 @@
                      :name  "submit"
                      :value "Submit"}]))
 
+(def ^:private prep-schema
+  "Memoized version of add-field-specs"
+  (memoize add-field-specs))
+
+(def ^:private encoder
+  "Memoized version of m/encoder"
+  (memoize m/encoder))
+
+(defn- index-specs
+  "Produce an index into the given schema, consisting of nested maps whose keys
+  are elements in a schema :in path, or the special key ::spec, whose value
+  will be the spec corresponding with the schema at that path"
+  [schema]
+  (reduce
+    (fn [index {:keys [in schema]}]
+      (assoc-in index (conj in ::spec) (::spec (m/properties schema))))
+    {}
+    (mu/subschemas schema)))
+
 (defn collect-field-specs
   "Given a schema, a value, and options, prepare the schema via add-field-specs,
   then encode it with collect-specs into a renderable AST"
-  ([schema] (collect-field-specs schema nil))
-  ([schema source] (collect-field-specs schema source {}))
-  ([schema source {::keys [auto-placeholder] :or {auto-placeholder true} :as options}]
-   (-> (add-field-specs schema options)
-       (m/encode source options (mt/transformer
-                                  (when auto-placeholder
-                                    add-placeholders)
-                                  mt/default-value-transformer
-                                  collect-specs))
-       wrap-root)))
+  ([schema]
+   (collect-field-specs schema nil))
+  ([schema source]
+   (collect-field-specs schema source {}))
+  ([schema source options]
+   (collect-field-specs schema source nil options))
+  ([schema source errors
+    {::keys [auto-placeholder] :or {auto-placeholder true} :as options}]
+   (let [schema' (prep-schema schema options)
+         encode (m/encoder schema' options (mt/transformer
+                                            (when auto-placeholder
+                                              add-placeholders)
+                                            mt/default-value-transformer))
+         prepped (encode source)
+         ;indexed (index-specs 
+         ;subschemas (mu/subschemas schema')
+         ;indexed-specs (reduce
+         ;                (fn [out {:keys [in schema]}]
+         ;                  (update-in out in assoc ::spec (::spec (m/properties schema))))
+         ;                {}
+         ;                subschemas)
+         indexed-specs (index-specs schema')
+         path->spec (fn [path]
+                      (loop [cursor indexed-specs
+                             [head & tail :as path] path]
+                        (if (empty? path)
+                          (get cursor ::spec)
+                          (some-> (some cursor [head ::m/in])
+                                  (recur tail)))))
+         path->error (into {}
+                           (map (fn [{:keys [in] :as error}]
+                                  [in (assoc error :message
+                                             (me/error-message error))]))
+                           errors)]
+     (prn path->error)
+     ;(assert (= (count subschemas) (count path->spec)))
+     (util/pathwalk
+       (fn [item path]
+         (let [error (path->error path)
+               spec (cond-> (path->spec path)
+                      (some? error) (assoc :error error))]
+           (println item \newline error \newline path \newline spec \newline "-----")
+           (cond
+             (= ::map (:type spec))
+             (assoc spec :children (map item (:order spec)))
+
+             (= ::collection (:type spec))
+             (assoc spec :children (seq item))
+
+             (:render? spec)
+             (-> spec
+                 (assoc :value item)
+                 (assoc :path path)
+                 ;(update :path splice-real-indexes path)
+                 add-path-info)
+
+             :else item)))
+       prepped))))
+
 
 ;; ------ rendering AST to markup ------
 
@@ -600,6 +652,7 @@
   ([schema source] (render-form schema source {}))
   ([schema source options]
    (-> (collect-field-specs schema source options)
+       wrap-root
        (render-specs options))))
 
 ;; ------ parsing ------

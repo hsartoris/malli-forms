@@ -73,7 +73,7 @@
                                [:html
                                 [:body
                                  [:main
-                                  (-> asn-pool-schema mf/collect-field-specs mf/render-specs)]]])})}
+                                  (mf/render-form asn-pool-schema)]]])})}
       :post     {;:compile coercion/compile-request-coercers
                  :parameters {:form asn-pool-schema}
                  :handler   (fn [req]

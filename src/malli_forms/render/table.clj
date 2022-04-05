@@ -45,8 +45,6 @@
 
 (defmethod render :radio
   [{:keys [options label value path] :as spec}]
-  ;(prn path options)
-  ;(prn path value)
   [:fieldset
    (when label
      [:legend label])
@@ -86,7 +84,6 @@
 
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]
-  (prn spec)
   [:fieldset
    (when-some [l (coll-legend spec)]
      [:legend l])

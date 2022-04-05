@@ -51,7 +51,7 @@
        [:input (props->attrs (assoc spec
                                     :selected sel?
                                     :id       id
-                                    :value    option))]))])
+                                    :value    (str option)))]))])
 
 (defmethod render :select
   [{:keys [options label #_:clj-kondo/ignore name value id] :as spec}]

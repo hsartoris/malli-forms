@@ -544,11 +544,8 @@
              (assoc spec :children (seq item))
 
              (:render? spec)
-             (-> spec
-                 (assoc :value item)
-                 (assoc :path path)
-                 ;(update :path splice-real-indexes path)
-                 add-path-info)
+             (cond-> (assoc spec :value item, :path path)
+               (:concrete-path? spec) add-path-info)
 
              :else item)))
        prepped))))
@@ -602,6 +599,7 @@
                                  (fn [spec]
                                    ;; recalculate path info for specs with idxs on them 
                                    (if (seq (:idxs spec))
+                                     ;; TODO: I think this is never used
                                      (add-path-info spec)
                                      ;; path info added at build time for concrete paths
                                      spec))}}}))))

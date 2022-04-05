@@ -65,30 +65,24 @@
   (ring/router
     ["/pools/new"
      {:name     ::new-pool
+      :middleware [(fn [handler]
+                     (fn [req]
+                       {:status 200
+                        :headers {"content-type" "text/html"}
+                        :body (rum/render-static-markup
+                                [:html [:body [:main (handler req)]]])}))]
       :get      {:handler (fn [_req]
-                            {:status 200
-                             :headers {"content-type" "text/html"}
-                             :body 
-                             (rum/render-static-markup
-                               [:html
-                                [:body
-                                 [:main
-                                  (mf/render-form asn-pool-schema)]]])})}
+                            (mf/render-form asn-pool-schema))}
       :post     {;:compile coercion/compile-request-coercers
                  :parameters {:form asn-pool-schema}
                  :handler   (fn [req]
-                              ;(pprint req)
-                              {:status 200
-                               :body (rum/render-static-markup
-                                       [:html
-                                        [:body
-                                         (let [params (:params req)
-                                               pp->str #(with-out-str (pprint %))
-                                               ; for whatever reason, this doesn't work when provided to the malli coercion
-                                               decoded (mf/parse asn-pool-schema params)]
-                                           (list
-                                             [:pre (pp->str params)]
-                                             [:pre (pp->str decoded)]))]])})}}]
+                              (let [params (:params req)
+                                    pp->str #(with-out-str (pprint %))
+                                    ; for whatever reason, this doesn't work when provided to the malli coercion
+                                    decoded (mf/parse asn-pool-schema params)]
+                                (list
+                                  [:pre (pp->str params)]
+                                  [:pre (pp->str decoded)])))}}]
     {;:compile coercion/compile-request-coercers
      :exception pretty/exception
      :data {:muuntaja muuntaja/instance

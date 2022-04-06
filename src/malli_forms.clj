@@ -100,7 +100,6 @@
   [spec]
   (let [path (:path spec)
         input-name (or (:name spec) (path->name path))]
-    (println "Adding path info on path" path)
     (-> (assoc spec :name input-name)
         ;; TODO: probably gensym for ids
         (default :id      (str "mf-" input-name))
@@ -596,8 +595,8 @@
   is expected, it returns the values of the map. Further coercion should be
   performed by other transformers, like malli.transformer/collection-transformer"
   (let [coders (into {}
-                     (for [stype (::collection schema-type-by-input-type)
-                           :when (not= stype :map-of)]
+                     (for [stype (remove #{:map :map-of}
+                                         (::collection schema-type-by-input-type))]
                        {stype unnest-seq}))]
     {:name      :unnest-seq
      :encoders  coders

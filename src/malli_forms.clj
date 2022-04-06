@@ -3,9 +3,7 @@
     [malli-forms.render.table :as table]
     [malli-forms.util :as util :refer [default
                                        path->name
-                                       path->label
-                                       unqualify
-                                       value->label]]
+                                       unqualify]]
     [malli.core :as m]
     [malli.error :as me]
     [malli.registry :as mr]
@@ -99,15 +97,12 @@
   "Add name, id, and label to a spec, based on a path already added to it"
   [spec]
   (let [path (:path spec)
-        input-name (or (:name spec) (path->name path))]
-    (-> (assoc spec :name input-name)
+        input-name (or (:name spec) (path->name path))
+        spec (assoc spec :name input-name)]
+    (-> spec
         ;; TODO: probably gensym for ids
-        (default :id      (str "mf-" input-name))
-        (cond->
-          (not (contains? #{::m/in nil} (last path)))
-          (-> (default :label   (path->label path))
-              ;; if still unset after above, try again with name
-              (default :label   (value->label input-name)))))))
+        (default :id    (str "mf-" input-name))
+        (default :label (util/label spec)))))
 
 ;; ------ building specs from a schema ------
 
@@ -336,12 +331,19 @@
                      stype (m/type schema)
                      naive-spec (extract-field-spec schema)
                      root? (= path base-path)
+                     ptype (schema-type->input-type parent)
+                     ;; TODO: simplify all these crazy conditionals
                      render? (and (not= ::collection (:type naive-spec))
                                   (or root?
-                                      (= (schema-type->input-type parent) ::collection)
+                                      (= ptype ::collection)
                                       (= parent :map)
                                       (and (::render? options)
                                            (not (no-render-children parent)))))
+                     ;; should a label be eventually generated for this item?
+                     label?  (and (or (not= ::collection ptype)
+                                      (= :map parent))
+                                  ;; TODO: kinda sketch
+                                  (not= ::m/in (peek (::path options))))
                      reqd? (and render?
                                 (not= stype :maybe) ;; TODO: good approach?
                                 (if (= parent :map)
@@ -353,7 +355,8 @@
                           (assoc ::parent stype
                                  ::naive-spec (cond-> naive-spec
                                                 render? (assoc :render? true)
-                                                reqd?   (assoc :required true))
+                                                reqd?   (assoc :required true)
+                                                label?  (assoc :label? true))
                                  ;; TODO: replace with just referencing naive parent spec
                                  ::render?  render?
                                  ::required reqd?)

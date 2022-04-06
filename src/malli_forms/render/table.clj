@@ -3,12 +3,10 @@
   other render function is provided."
   (:require
     [malli-forms :as-alias mf]
-    [malli-forms.util :refer [default
-                              path->label
-                              path->name
-                              props->attrs
-                              value->label]]
-    [malli.core :as-alias m]))
+    [malli-forms.util :as util :refer [default
+                                       path->name
+                                       props->attrs
+                                       value->label]]))
 
 (defn- error-span
   "Get zero or more spans containings errors for the given field spec"
@@ -18,18 +16,11 @@
 
 (defn- labeled-input
   [{:keys [id label] :as field-spec}]
-  (println "Rendering labeled input" field-spec)
   [:div.form-row
    (when label
      [:label {:for id} label])
    [:input (props->attrs field-spec)]
    (error-span field-spec)])
-
-(defn- coll-legend
-  "Get a legend value for a collection based on its spec"
-  [spec]
-  (or (some-> spec ::m/name value->label)
-      (path->label (:path spec))))
 
 (defmulti render
   "Renderer used when no theme is specified"
@@ -87,7 +78,7 @@
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]
   [:fieldset
-   (when-some [l (coll-legend spec)]
+   (when-some [l (util/label spec)]
      [:legend l])
    (interpose [:br] (seq children))
    (error-span spec)])

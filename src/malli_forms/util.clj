@@ -3,6 +3,7 @@
   (:require
     [clojure.set :as set]
     [clojure.string :as str]
+    [malli.core :as-alias m]
     ;; TODO
     [reitit.impl :refer [url-encode #_url-decode]]))
 
@@ -124,16 +125,29 @@
   a human-readable label"
   [path]
   (when (seq path)
-    (let [final (last path)]
-      (when (not= :malli.core/in final)
-        (value->label final)))))
+    (value->label (last path))))
+    ;(let [final (last path)]
+    ;  (when (not= :malli.core/in final)
+    ;    (value->label final)))))
+
+(defn label
+  "When appropriate, get a best-guess label for a spec. Assumes :name is set
+  correctly."
+  [spec]
+  (when (:label? spec)
+    (or (:label spec)
+        ;; TODO: never used at the moment
+        (some-> spec ::m/name value->label)
+        (path->label (:path spec))
+        (value->label (:name spec)))))
 
 ;; TODO: doesn't seem like this belongs here
+;; TODO: review for consistency
 (def ^:private internal-attrs
   "Keys that may be present on a field spec, and which should be stripped
   before rendering"
-  [:abs-path
-   :render?
+  [:render?
+   :label?
    :concrete-path?
    :path
    :children

@@ -514,27 +514,6 @@
 
 ;; ------ rendering AST to markup ------
 
-(defn- splice-real-indexes
-  "Given a path that contains one or more ::m/in and a sequence of actual
-  indexes, replace the first ::m/in with the first index, etc."
-  [path idxs]
-  (loop [out                    []
-         [head & tail :as path] path
-         [idx :as idxs]         idxs]
-    (cond
-      ;; out of replacements - dump the rest of the path into out
-      (nil? idx) (into out
-                       (map (fn [item]
-                              (assert (not= item ::m/in) "Mismatched indexes; extra ::m/in!")
-                              item))
-                       path)
-      ;; out of path - return out, but check no more real indexes
-      (nil? head) (do (assert (nil? idx) "Extra indexes; out of ::m/in!") out)
-      ;; replace ::m/in with next idx
-      (= ::m/in head) (recur (conj out idx) tail (next idxs))
-      ;; don't replace, just put on stack
-      :else (recur (conj out head) tail idxs))))
-
 (defn render-specs
   "Given a value as produced by collect-field-specs and options, renders fields
   defined by AST into markup"
@@ -542,28 +521,8 @@
   ([source {:keys [render] :or {render table/render} :as options}]
    (m/encode (m/deref field-spec-schema) source options
              (mt/transformer
-               {:name :render-specs ;; due to transformer ordering this runs after splice-idxs:leave
-                :encoders {:map {:leave render}}}
-               {:name :splice-idxs
-                :encoders {:map {:enter
-                                 (fn [{:keys [idxs] :as spec}]
-                                   (if (seq idxs)
-                                     (-> spec
-                                         (update :path splice-real-indexes idxs)
-                                         ;; pass idxs on to children if they have none
-                                         (update :children
-                                                 (fn [children]
-                                                   (for [child children]
-                                                     (update child :idxs #(or % idxs))))))
-                                     spec))
-                                 :leave
-                                 (fn [spec]
-                                   ;; recalculate path info for specs with idxs on them 
-                                   (if (seq (:idxs spec))
-                                     ;; TODO: I think this is never used
-                                     (add-path-info spec)
-                                     ;; path info added at build time for concrete paths
-                                     spec))}}}))))
+               {:name :render-specs
+                :encoders {:map {:leave render}}}))))
 
 (defn render-form
   "Full pipeline"

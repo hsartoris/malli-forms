@@ -428,37 +428,6 @@
 
 ;; ------ schema to AST based on real values ------
 
-(def collect-specs
-  "Transformer that collects field specs based on input value."
-  {:name            :collect-specs
-   :default-encoder {:compile (fn [schema _]
-                                ;; maybe store val props in special key on child?
-                                (let [spec (::spec (m/properties schema))
-                                      handler
-                                      (cond
-                                        (:render? spec)
-                                        #(assoc spec :value %)
-                                        (= ::collection (:type spec))
-                                        (fn [child-specs]
-                                          (->> child-specs
-                                               (map-indexed
-                                                 (fn [idx child-spec]
-                                                   (update child-spec :idxs #(cons idx %))))
-                                               (assoc spec :children))))]
-                                  (when (some? handler)
-                                    {:leave handler})))}
-   :encoders  {:map {:compile (fn [schema _]
-                                (let [spec (::spec (m/properties schema))
-                                      order (:order spec)]
-                                  {;; collect child specs, which are now in the vals
-                                   :leave
-                                   (fn [value]
-                                     (if (map? value)
-                                       ;; preserve order
-                                       ;; TODO: custom order via attributes
-                                       (assoc spec :children (map value order))
-                                       ;; TODO: then what?
-                                       value))}))}}})
 (defn- wrap-root
   "Wrap the root node of a collected AST with one of type ::form but otherwise
   the same spec as the root."

@@ -128,10 +128,22 @@
       (when (not= :malli.core/in final)
         (value->label final)))))
 
+;; TODO: doesn't seem like this belongs here
+(def ^:private internal-attrs
+  "Keys that may be present on a field spec, and which should be stripped
+  before rendering"
+  [:abs-path
+   :render?
+   :concrete-path?
+   :path
+   :children
+   :order
+   :options])
+
 (defn props->attrs
   "Convert field spec from a schema into an attribute map for an input"
   [{:keys [attributes required selected value] :as spec}]
-  (cond-> (dissoc spec :attributes :required :selected :value)
+  (cond-> (apply dissoc spec :attributes :required :selected :value internal-attrs)
     (true? required)    (assoc :required true)
     (some? value)       (assoc :value value)
     (some? attributes)  (conj attributes)

@@ -104,12 +104,15 @@
   [spec]
   (let [path (:path spec)
         input-name (or (:name spec) (path->name path))]
+    (println "Adding path info on path" path)
     (-> (assoc spec :name input-name)
-        (default :label   (path->label path))
-        ;; if still unset after above, try again with name
-        (default :label   (value->label input-name))
         ;; TODO: probably gensym for ids
-        (default :id      (str "mf-" input-name)))))
+        (default :id      (str "mf-" input-name))
+        (cond->
+          (not (contains? #{::m/in nil} (last path)))
+          (-> (default :label   (path->label path))
+              ;; if still unset after above, try again with name
+              (default :label   (value->label input-name)))))))
 
 ;; ------ building specs from a schema ------
 
@@ -544,8 +547,7 @@
              (assoc spec :children (seq item))
 
              (:render? spec)
-             (cond-> (assoc spec :value item, :path path)
-               (:concrete-path? spec) add-path-info)
+             (-> spec (assoc :value item, :path path) add-path-info)
 
              :else item)))
        prepped))))
@@ -694,9 +696,16 @@
        decoded))))
 
 ;; remaining:
-;; - clean up field-spec schema to match reality
-;; - format errors into rendered form
-;; - attempt parse macro
-;; - attempt parse=>re-render form macro built on previous
-;; - optional reitit coercion module
-;; - ring-anti-forgery
+;; - [ ] Field specs:
+;;    - [ ] clean up schema to match reality
+;;    - [X] strip internal keys before rendering
+;;      - see util/internal-attrs
+;;    - [ ] store malli type for utility
+;; [X] format errors into rendered form
+;; [X] attempt parse macro
+;;  - just function
+;; [X] attempt parse=>re-render form macro built on previous
+;;  - part of above
+;; [ ] simple, configurable middleware to parse
+;; [ ] optional reitit coercion module
+;; [ ] ring-anti-forgery

@@ -18,6 +18,7 @@
 
 (defn- labeled-input
   [{:keys [id label] :as field-spec}]
+  (println "Rendering labeled input" field-spec)
   [:div.form-row
    (when label
      [:label {:for id} label])
@@ -65,7 +66,8 @@
   (list
     (when label
       [:label {:for id} label])
-    [:select (dissoc spec :label :options :value)
+    [:select 
+     (-> spec props->attrs (dissoc :label :options :value))
      (list
        (when-not (some #(= value %) options) ;; nothing selected
          [:option {:selected true :value "" :disabled true} "Select an option"])

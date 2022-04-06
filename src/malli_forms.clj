@@ -366,7 +366,7 @@
                             (update ::path conj (peek path))))
                       (m/-walk schema walker path))))
                                 
-             (outer* [schema abs-path children
+             (outer* [schema _abs-path children
                       {::keys [use-child path] :as options}]
                (cond
                  use-child (nth children use-child)
@@ -380,8 +380,7 @@
                        spec (-> (complete-field-spec schema naive-spec children)
                                 ;; add path after complete-field-spec in case of
                                 ;; accidental override from child specs
-                                (assoc :path path
-                                       :abs-path abs-path))
+                                (assoc :path path))
                        concrete-path? (not (some #(= % ::m/in) path))
                        spec (cond-> spec
                               ;; TODO: probably remove

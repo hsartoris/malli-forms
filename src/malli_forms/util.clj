@@ -134,12 +134,12 @@
   "When appropriate, get a best-guess label for a spec. Assumes :name is set
   correctly."
   [spec]
-  (when (:label? spec)
-    (or (:label spec)
-        ;; TODO: never used at the moment
-        (some-> spec ::m/name value->label)
-        (path->label (:path spec))
-        (value->label (:name spec)))))
+  (or (:label spec)
+      (when (:label? spec)
+        (or ;; TODO: never used at the moment
+            (some-> spec ::m/name value->label)
+            (path->label (:path spec))
+            (value->label (:name spec))))))
 
 ;; TODO: doesn't seem like this belongs here
 ;; TODO: review for consistency

@@ -60,6 +60,15 @@
              {:first  10
               :last   20}}})
 
+(def ex-source
+  "input data valid for schema before decoding"
+  {"label" "blah"
+   "preallocated" "false"
+   "tags" ["test"]
+   "ranges" {"%7B%3Afirst%20nil%2C%20%3Alast%20nil%7D"
+             {"first" "10","last" "20"}}
+   "submit" "Submit"})
+
 (def router
   "Reitit router for testing above schema"
   (ring/router
@@ -79,10 +88,16 @@
                               (let [params (:params req)
                                     pp->str #(with-out-str (pprint %))
                                     ; for whatever reason, this doesn't work when provided to the malli coercion
-                                    decoded (mf/parse asn-pool-schema params)]
+                                    decoded (mf/handle-submit asn-pool-schema params)]
+                                                      ;{::mf/auto-placeholder false})]
                                 (list
-                                  (when (mf/parse-failed? decoded)
-                                    @(:form decoded))
+                                  (or (and (mf/parse-failed? decoded)
+                                           (list [:span "Failed parse"] [:br]
+                                                 @(:form decoded)))
+                                      (when-some [form (::mf/form decoded)]
+                                        (list [:span "Re-rendered"] [:br]
+                                              @form))
+                                      (mf/render-form asn-pool-schema decoded))
                                   [:pre (pp->str params)]
                                   [:pre (pp->str decoded)])))}}]
     {;:compile coercion/compile-request-coercers
@@ -135,4 +150,5 @@
               (prn args)
               (apply app args))
             {:join? false
+             :host "0.0.0.0"
              :port 8081})))

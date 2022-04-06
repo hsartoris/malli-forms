@@ -73,7 +73,7 @@
 
 (defmethod render :submit
   [spec]
-  [:input (props->attrs spec)])
+  [:button (props->attrs spec) (or (util/label spec) (:value spec))])
 
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]
@@ -95,4 +95,3 @@
     label { padding-right: 10px; }
     span.error { font-size: 80%; color: red; }"]
    (interpose [:br] (seq children))])
-

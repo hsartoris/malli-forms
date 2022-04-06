@@ -410,6 +410,12 @@
                 ::m/walk-entry-vals true
                 ::m/walk-schema-refs true))))))
 
+(defn- placeholder-target?
+  "Pass a schema and an options map; checks if the path specified by the
+  schema's spec matches the placeholder-target in the options map"
+  [schema {::keys [placeholder-target]}]
+  (= placeholder-target (-> schema m/properties ::spec :path path->name)))
+
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholders
 (def add-placeholders
   "Transformer that adds placeholder values by schema type"
@@ -422,10 +428,24 @@
                                            (if (or (nil? value) (map? value))
                                              (reduce #(update %1 %2 identity) value child-keys)
                                              value))}))}
-              :set {:enter (fn [value]
-                             (if (nil? value) #{nil} value))}
-              :map-of {:enter (fn [value]
-                                (if (nil? value) {nil nil} value))}}})
+              :set {:compile (fn [schema options]
+                               (cond
+                                 (placeholder-target? schema options)
+                                 #((fnil conj #{}) % nil)
+
+                                 (::auto-placeholder options)
+                                 #(or % #{nil})))}
+              :map-of {:compile (fn [schema options]
+                                  (cond
+                                    (placeholder-target? schema options)
+                                    #(assoc % nil nil)
+                                    (::auto-placeholder options)
+                                    #(or % {nil nil})))}}})
+
+(def ^:private may-placeholder
+  "Malli types that support adding a placeholder value"
+  ;(set (keys (:encoders add-placeholders))))
+  #{:set :map-of})
 
 ;; ------ schema to AST based on real values ------
 
@@ -470,6 +490,10 @@
           {}
           errors))
 
+(def placeholder-submit
+  "Submit name for adding a placeholder"
+  "mf-add-placeholder")
+
 (defn collect-field-specs
   "Given a schema, a value, and options, prepare the schema via add-field-specs,
   then encode it with collect-specs into a renderable AST"
@@ -479,15 +503,17 @@
    (collect-field-specs schema source {}))
   ([schema source options]
    (collect-field-specs schema source nil options))
-  ([schema source errors
-    {::keys [auto-placeholder] :or {auto-placeholder true} :as options}]
+  ([schema source errors options]
    (let [schema' (prep-schema schema options)
-         encode (m/encoder schema' options (mt/transformer
-                                            (when auto-placeholder
-                                              add-placeholders)
-                                            mt/default-value-transformer))
-         prepped (encode source)
+         encode (m/encoder schema'
+                           (default options ::auto-placeholder true)
+                           (mt/transformer
+                             add-placeholders
+                             mt/default-value-transformer))
          indexed-specs (index-specs schema')
+         ;; TODO: figure out why this is necessary again
+         ;; specifically, the some [head ::m/in] that prevents this just being
+         ;; a regular get-in
          path->spec (fn [path]
                       (loop [cursor indexed-specs
                              [head & tail :as path] path]
@@ -496,23 +522,38 @@
                           (some-> (some cursor [head ::m/in])
                                   (recur tail)))))
          path->errors (index-errors errors)]
+     ;; TODO: problem: error paths are in terms of the decoded data, before
+     ;; any placeholder application (though not default values, as they're
+     ;; applied in the parse stack as well). Really, this means that errors
+     ;; should be retrieved *before* placeholder application, but it is also
+     ;; necessary to apply placeholders
      (util/pathwalk
        (fn [item path]
          (let [errors (path->errors path)
                spec (cond-> (path->spec path)
-                      (some? errors) (assoc :errors errors))]
+                      (some? errors) (assoc :errors errors))
+               mtype (::m/type spec)
+               stype (:type spec)
+               children (cond
+                          (= :map mtype)          (map item (:order spec))
+                          (= ::collection stype)  (seq item))
+               children (cond-> children
+                          (may-placeholder mtype)
+                          ;; TODO: awkward
+                          (some-> vec (conj {:type :submit
+                                             :name placeholder-submit
+                                             :onclick "this.closest('form').noValidate=true;"
+                                             :value (path->name path)
+                                             :label "+"})))]
            (cond
-             (= :map (::m/type spec))
-             (assoc spec :children (map item (:order spec)))
-
-             (= ::collection (:type spec))
-             (assoc spec :children (seq item))
+             (= ::collection stype) ;; also catches mtype :map
+             (assoc spec :children children)
 
              (:render? spec)
              (-> spec (assoc :value item, :path path) add-path-info)
 
              :else item)))
-       prepped))))
+       (encode source)))))
 
 
 ;; ------ rendering AST to markup ------
@@ -608,13 +649,31 @@
      (if-some [error (explain decoded)]
        (-> error
            (assoc :source data
-                  :options options
-                  :form (delay (render-form schema
-                                            (:value error)
-                                            (:errors error)
-                                            options)))
+                  :options options)
            map->ParseFailure)
        decoded))))
+
+(defn handle-submit
+  "Dispatches to `parse`, but attaches a re-rendered form in either the failure
+  case or when placeholder-submit is provided in the form."
+  ([schema data] (handle-submit schema data {}))
+  ([schema data options]
+   (let [parsed (parse schema data options)
+         placeholder-target (get data placeholder-submit)
+         options (cond-> options
+                   placeholder-target
+                   (assoc ::placeholder-target placeholder-target))]
+     (cond
+       (parse-failed? parsed)
+       (assoc parsed :form (delay (render-form schema
+                                               (:value parsed)
+                                               (:errors parsed)
+                                               options)))
+       placeholder-target
+       (assoc parsed ::form (delay (render-form schema parsed options)))
+
+       :else parsed))))
+
 
 ;; remaining:
 ;; - [ ] Field specs:

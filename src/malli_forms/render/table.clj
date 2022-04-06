@@ -92,16 +92,6 @@
    (interpose [:br] (seq children))
    (error-span spec)])
 
-;; TODO: basically the same as above, but otherwise impossible to distinguish
-;; in collect-field-specs
-(defmethod render ::mf/map
-  [{:keys [children] :as spec}]
-  [:fieldset
-   (when-some [l (coll-legend spec)]
-     [:legend l])
-   (interpose [:br] (seq children))
-   (error-span spec)])
-
 (defmethod render ::mf/form
   [{:keys [children] :as spec}]
   [:form

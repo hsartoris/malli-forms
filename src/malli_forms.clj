@@ -69,6 +69,8 @@
    ::field-spec.collection
    [:map {:doc "Field spec for a parent of multiple other field specs"}
     [:path ::path]
+    [:order {:optional true
+             :doc "Used when collection is of type map"} sequential?]
     [:children [:sequential [:ref ::field-spec]]]]
 
    ::field-spec.form
@@ -76,16 +78,10 @@
     [:path ::path]
     [:children [:sequential [:ref ::field-spec]]]]
 
-   ::field-spec.map
-   [:map {:doc "Field spec for a map, which is a special case"}
-    [:path ::path]
-    [:children [:sequential [:ref ::field-spec]]]]
-
    ::field-spec
    [:multi {:dispatch :type}
     [::collection ::field-spec.collection]
     [::form       ::field-spec.form]
-    [::map        ::field-spec.map]
     [::m/default  ::field-spec.input]]})
 
 (def registry
@@ -159,15 +155,13 @@
     :select   [:enum]
     ;; fake input type that includes schema types that may have (many) children
     ;; intentionally does not include predicate schemas, as they cannot have children
-    ::collection [;:map ;; TODO: should?: doesn't include map because it really needs special handling
-                  :map-of
+    ::collection [:map :map-of
                   :sequential :vector :set
                   :tuple ;; TODO
                   ;; really big TODO
                   :+ :*
                   :repeat
-                  :cat :catn]
-    ::map [:map]})
+                  :cat :catn]})
 
 (def schema-type->input-type
   "Simple mapping from schema type to HTML form input type"
@@ -184,8 +178,9 @@
   Defaults to required=true"
   {:malli/schema [:=> [:cat ::m/schema] ::field-spec]}
   [schema]
-  (let [input-type ((m/type schema) schema-type->input-type)]
-    (into (cond-> {}
+  (let [mtype (m/type schema)
+        input-type (schema-type->input-type mtype)]
+    (into (cond-> {::m/type mtype}
             input-type (assoc :type input-type))
           (keep (fn [[k v]]
                   (when (= form-ns (namespace k))
@@ -342,7 +337,7 @@
                      stype (m/type schema)
                      naive-spec (extract-field-spec schema)
                      root? (= path base-path)
-                     render? (and (not (#{::map ::collection} (:type naive-spec)))
+                     render? (and (not= ::collection (:type naive-spec))
                                   (or root?
                                       (= (schema-type->input-type parent) ::collection)
                                       (= parent :map)
@@ -389,14 +384,11 @@
                                        :abs-path abs-path))
                        concrete-path? (not (some #(= % ::m/in) path))
                        spec (cond-> spec
-                              (and (:render? spec) concrete-path?)
-                              add-path-info
-
                               ;; TODO: probably remove
                               concrete-path? (assoc :concrete-path? true)
 
                               ;; TODO: better ordering control
-                              (= ::map (:type spec))
+                              (= :map (::m/type spec))
                               (assoc :order (map #(nth % 0) children)))]
                    ;; TODO: remove children marked no-spec and send back to inner if any
                    (-> schema
@@ -540,7 +532,7 @@
                spec (cond-> (path->spec path)
                       (some? errors) (assoc :errors errors))]
            (cond
-             (= ::map (:type spec))
+             (= :map (::m/type spec))
              (assoc spec :children (map item (:order spec)))
 
              (= ::collection (:type spec))
@@ -700,7 +692,7 @@
 ;;    - [ ] clean up schema to match reality
 ;;    - [X] strip internal keys before rendering
 ;;      - see util/internal-attrs
-;;    - [ ] store malli type for utility
+;;    - [X] store malli type for utility
 ;; [X] format errors into rendered form
 ;; [X] attempt parse macro
 ;;  - just function

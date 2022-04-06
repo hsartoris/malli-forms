@@ -138,7 +138,8 @@
    :path
    :children
    :order
-   :options])
+   :options
+   :malli.core/type])
 
 (defn props->attrs
   "Convert field spec from a schema into an attribute map for an input"

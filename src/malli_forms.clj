@@ -32,6 +32,23 @@
   (def s2 [:merge s1 ::field-spec])
   (def s3 [:select-keys s1 [:a]]))
 
+(def placeholder-submit
+  "Submit name for adding a placeholder"
+  "mf-add-placeholder")
+
+(def ^:private data-root-key
+  "Key under which actual schema data will be placed in form"
+  :data)
+
+(def ^:private base-form-schema
+  "Base schema that the actual data schema will be placed into"
+  (m/schema
+    [:map
+     [placeholder-submit
+      {:doc "When provided, indicates target schema element to add placeholder value for" :optional true
+       ::render? false}
+      string?]]))
+
 (def ^:private local-registry
   {::type         [:enum
                    :number :text :select
@@ -334,6 +351,9 @@
                      ptype (schema-type->input-type parent)
                      ;; TODO: simplify all these crazy conditionals
                      render? (and (not= ::collection (:type naive-spec))
+                                  ;; if render? is flagged in spec, respect it
+                                  (or (not (contains? naive-spec :render?))
+                                      (:render? naive-spec))
                                   (or root?
                                       (= ptype ::collection)
                                       (= parent :map)
@@ -416,19 +436,25 @@
   [schema {::keys [placeholder-target]}]
   (= placeholder-target (-> schema m/properties ::spec :path path->name)))
 
-;; TODO: use some kind of identifiable value like ::placeholder for placeholders
-(def add-placeholders
-  "Transformer that adds placeholder values by schema type"
-  {:name :add-placeholders
+(def ensure-required-keys
+  "Transformer that ensures that required keys are present in maps by adding
+  nil values when missing."
+  {:name :ensure-required-keys
    :encoders {:map {:compile (fn [schema _]
                                (let [child-keys (map #(nth % 0) (m/children schema))]
                                  {;; on enter, ensure placeholder values are present, as
                                   ;; otherwise transform doesn't recurse to  them
                                   :enter (fn [value]
+                                           (println "Ensuring required keys on" value "with order" child-keys (or (nil? value) (map? value)))
                                            (if (or (nil? value) (map? value))
                                              (reduce #(update %1 %2 identity) value child-keys)
-                                             value))}))}
-              :set {:compile (fn [schema options]
+                                             value))}))}}})
+
+;; TODO: use some kind of identifiable value like ::placeholder for placeholders
+(def add-placeholders
+  "Transformer that adds placeholder values by schema type"
+  {:name :add-placeholders
+   :encoders {:set {:compile (fn [schema options]
                                (cond
                                  (placeholder-target? schema options)
                                  #((fnil conj #{}) % nil)
@@ -444,8 +470,7 @@
 
 (def ^:private may-placeholder
   "Malli types that support adding a placeholder value"
-  ;(set (keys (:encoders add-placeholders))))
-  #{:set :map-of})
+  (set (keys (:encoders add-placeholders))))
 
 ;; ------ schema to AST based on real values ------
 
@@ -490,10 +515,6 @@
           {}
           errors))
 
-(def placeholder-submit
-  "Submit name for adding a placeholder"
-  "mf-add-placeholder")
-
 (defn collect-field-specs
   "Given a schema, a value, and options, prepare the schema via add-field-specs,
   then encode it with collect-specs into a renderable AST"
@@ -504,10 +525,13 @@
   ([schema source options]
    (collect-field-specs schema source nil options))
   ([schema source errors options]
-   (let [schema' (prep-schema schema options)
+   (let [schema' (-> (mu/assoc base-form-schema data-root-key schema options)
+                     (prep-schema options))
+         ;(prep-schema [:map [:data schema]] options)
          encode (m/encoder schema'
                            (default options ::auto-placeholder true)
                            (mt/transformer
+                             ensure-required-keys
                              add-placeholders
                              mt/default-value-transformer))
          indexed-specs (index-specs schema')
@@ -540,19 +564,19 @@
                children (cond-> children
                           (may-placeholder mtype)
                           ;; TODO: awkward
-                          (some-> vec (conj {:type :submit
-                                             :name placeholder-submit
-                                             :onclick "this.closest('form').noValidate=true;"
-                                             :value (path->name path)
-                                             :label "+"})))]
+                          (some-> vec
+                                  (conj
+                                    {:type    :submit
+                                     :name    placeholder-submit
+                                     :onclick "this.closest('form').noValidate=true;"
+                                     :value   (path->name path)
+                                     :label   "+"})))]
            (cond
              (= ::collection stype) ;; also catches mtype :map
              (assoc spec :children children)
 
              (:render? spec)
-             (-> spec (assoc :value item, :path path) add-path-info)
-
-             :else item)))
+             (-> spec (assoc :value item, :path path) add-path-info))))
        (encode source)))))
 
 
@@ -566,7 +590,7 @@
    (m/encode (m/deref field-spec-schema) source options
              (mt/transformer
                {:name :render-specs
-                :encoders {:map {:leave render}}}))))
+                :encoders {:map {:leave #(some-> % render)}}}))))
 
 (defn render-form
   "Full pipeline"
@@ -583,7 +607,6 @@
 (defn- unnest-seq
   "See unnest-seq-transformer"
   [value]
-  (prn value)
   (if (map? value) (vals value) value))
 
 (def unnest-seq-transformer
@@ -614,6 +637,7 @@
   [;; TODO: can do better than this. Will need to cover map-of as well
    (mt/key-transformer {:decode keyword})
    mt/default-value-transformer ;; TODO: options for this
+   ensure-required-keys
    unnest-seq-transformer
    (mt/string-transformer) ;; includes mt/json-transformer, basically
    (mt/strip-extra-keys-transformer)])
@@ -632,11 +656,13 @@
   (instance? ParseFailure x))
 
 (defn parse
-  "Simple parse and validate using schema against data. Throws on failure."
+  "Simple parse using schema against data. Throws on failure.
+  data should be as returned by ring's nested-params middleware."
   ([schema data] (parse schema data {}))
-  ([schema data {::keys [validate] :or {validate true} :as options}]
-   (let [decode (decoder schema options parse-transformer)
-         ;valid? (if validate (m/validator schema options) (constantly true))
+  ([schema data {:keys [validate] :or {validate true} :as options}]
+   (let [;; wrap schema in base form schema
+         schema (mu/assoc base-form-schema :data schema options)
+         decode (m/decoder schema options parse-transformer)
          explain (if validate (m/explainer schema options) (constantly nil))
          decoded (try
                    (decode data)
@@ -646,12 +672,15 @@
                                       :schema   schema
                                       :options  options}
                                      e))))]
+     (flush)
+     (println "Decoded:" decoded)
      (if-some [error (explain decoded)]
        (-> error
+           ;(update :value :data)
            (assoc :source data
                   :options options)
            map->ParseFailure)
-       decoded))))
+       (get decoded data-root-key)))))
 
 (defn handle-submit
   "Dispatches to `parse`, but attaches a re-rendered form in either the failure

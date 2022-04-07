@@ -103,11 +103,10 @@
   "Takes a path to a field in a nested data structure and produces a suitable
   HTML input name"
   [path]
-  (if (seq path)
+  (when (seq path)
     (let [[head & tail] (mapv munge-name-part path)]
       (apply str head (when tail
-                        (mapv #(format "[%s]" %) tail))))
-    "root"))
+                        (mapv #(format "[%s]" %) tail))))))
 
 ;; TODO: test
 (defn value->label
@@ -122,13 +121,9 @@
 
 (defn path->label
   "Takes a path to a field in a nested data structure and attempts to produce
-  a human-readable label"
+  a human-readable label. Drops first item in path as it will be the data node"
   [path]
-  (when (seq path)
-    (value->label (last path))))
-    ;(let [final (last path)]
-    ;  (when (not= :malli.core/in final)
-    ;    (value->label final)))))
+  (some-> path rest last value->label))
 
 (defn label
   "When appropriate, get a best-guess label for a spec. Assumes :name is set
@@ -138,8 +133,8 @@
       (when (:label? spec)
         (or ;; TODO: never used at the moment
             (some-> spec ::m/name value->label)
-            (path->label (:path spec))
-            (value->label (:name spec))))))
+            (path->label (:path spec))))))
+            ;(value->label (:name spec))))))
 
 ;; TODO: doesn't seem like this belongs here
 ;; TODO: review for consistency

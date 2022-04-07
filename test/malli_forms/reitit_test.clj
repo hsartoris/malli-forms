@@ -72,35 +72,53 @@
 (def router
   "Reitit router for testing above schema"
   (ring/router
-    ["/pools/new"
-     {:name     ::new-pool
-      :middleware [(fn [handler]
-                     (fn [req]
-                       {:status 200
-                        :headers {"content-type" "text/html"}
-                        :body (rum/render-static-markup
-                                [:html [:body [:main (handler req)]]])}))]
-      :get      {:handler (fn [_req]
-                            (mf/render-form asn-pool-schema))}
-      :post     {;:compile coercion/compile-request-coercers
-                 :parameters {:form asn-pool-schema}
-                 :handler   (fn [req]
-                              (let [params (:params req)
-                                    pp->str #(with-out-str (pprint %))
-                                    ; for whatever reason, this doesn't work when provided to the malli coercion
-                                    decoded (mf/handle-submit asn-pool-schema params)]
-                                                      ;{::mf/auto-placeholder false})]
-                                (list
-                                  (or (and (mf/parse-failed? decoded)
-                                           (list [:span "Failed parse"] [:br]
-                                                 @(:form decoded)))
-                                      (when-some [form (::mf/form decoded)]
-                                        (list [:span "Re-rendered"] [:br]
-                                              @form))
-                                      (mf/render-form asn-pool-schema decoded))
-                                  [:pre (pp->str params)]
-                                  [:pre (pp->str decoded)])))}}]
+    [["/pools/new"
+      {:name     ::new-pool
+       :get      {:handler (fn [_req]
+                             (mf/render-form asn-pool-schema))}
+       :post     {;:compile coercion/compile-request-coercers
+                  :parameters {:form asn-pool-schema}
+                  :handler   (fn [req]
+                               (let [params (:params req)
+                                     pp->str #(with-out-str (pprint %))
+                                     ; for whatever reason, this doesn't work when provided to the malli coercion
+                                     decoded (mf/handle-submit asn-pool-schema params)]
+                                 ;{::mf/auto-placeholder false})]
+                                 (list
+                                   (or (and (mf/parse-failed? decoded)
+                                            (list [:span "Failed parse"] [:br]
+                                                  @(:form decoded)))
+                                       (when-some [form (::mf/form decoded)]
+                                         (list [:span "Re-rendered"] [:br]
+                                               @form))
+                                       (mf/render-form asn-pool-schema decoded))
+                                   [:pre (pp->str params)]
+                                   [:pre (pp->str decoded)])))}}]
+     ["/math"
+      ["/inc"
+       {::mf/schema number?
+        :handler inc
+        :middleware [(fn [handler]
+                       (fn [req]
+                         [:span (handler req)]))]}]
+      ["/sum"
+       {:get {:handler (fn [_]
+                         (mf/render-form [:set number?]))}}]]]
     {;:compile coercion/compile-request-coercers
+     :coerce (fn [[path {::mf/keys [schema] :keys [handler] :as data}] opts]
+               (println "Compiling route" [path data] "with options" opts)
+               [path
+                (if (and schema handler)
+                  (-> (dissoc data :handler)
+                      (assoc :get   {:handler (fn [_] (mf/render-form schema))}
+                             :post  {:handler (fn [{:keys [params]}]
+                                                (let [decoded (mf/handle-submit schema params)]
+                                                  (println decoded)
+                                                  (or (and (mf/parse-failed? decoded)
+                                                           @(:form decoded))
+                                                      (some-> decoded ::mf/form deref)
+                                                      (handler decoded))))}))
+                  data)])
      :exception pretty/exception
      :data {:muuntaja muuntaja/instance
             :middleware [parameters/parameters-middleware
@@ -127,7 +145,13 @@
                          ;      (pprint res)
                          ;      res)))
                          rrc/coerce-exceptions-middleware
-                         rrc/coerce-request-middleware]}}))
+                         rrc/coerce-request-middleware
+                         (fn [handler]
+                           (fn [req]
+                             {:status 200
+                              :headers {"content-type" "text/html"}
+                              :body (rum/render-static-markup
+                                      [:html [:body [:main (handler req)]]])}))]}}))
 
 (def ^:private app (ring/ring-handler router))
 

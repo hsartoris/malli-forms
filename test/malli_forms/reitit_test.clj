@@ -69,34 +69,25 @@
              {"first" "10","last" "20"}}
    "submit" "Submit"})
 
+(defn pprint-pre
+  "Pretty-print and wrap in a :pre"
+  [data]
+  [:pre (with-out-str (pprint data))])
+
 (def router
   "Reitit router for testing above schema"
   (ring/router
     [["/pools/new"
       {:name     ::new-pool
-       :get      {:handler (fn [_req]
-                             (mf/render-form asn-pool-schema))}
-       :post     {;:compile coercion/compile-request-coercers
-                  :parameters {:form asn-pool-schema}
-                  :handler   (fn [req]
-                               (let [params (:params req)
-                                     pp->str #(with-out-str (pprint %))
-                                     ; for whatever reason, this doesn't work when provided to the malli coercion
-                                     decoded (mf/handle-submit asn-pool-schema params)]
-                                 ;{::mf/auto-placeholder false})]
-                                 (list
-                                   (or (and (mf/parse-failed? decoded)
-                                            (list [:span "Failed parse"] [:br]
-                                                  @(:form decoded)))
-                                       (when-some [form (::mf/form decoded)]
-                                         (list [:span "Re-rendered"] [:br]
-                                               @form))
-                                       (mf/render-form asn-pool-schema decoded))
-                                   [:pre (pp->str params)]
-                                   [:pre (pp->str decoded)])))}}]
+       ::mf/schema asn-pool-schema
+       :handler pprint-pre}]
      ["/math"
+      ["/echo"
+       {::mf/schema [:map
+                     [::my-number int?]]
+        :handler    identity}]
       ["/inc"
-       {::mf/schema number?
+       {::mf/schema int?
         :handler inc
         :middleware [(fn [handler]
                        (fn [req]
@@ -111,13 +102,31 @@
                 (if (and schema handler)
                   (-> (dissoc data :handler)
                       (assoc :get   {:handler (fn [_] (mf/render-form schema))}
-                             :post  {:handler (fn [{:keys [params]}]
-                                                (let [decoded (mf/handle-submit schema params)]
-                                                  (println decoded)
-                                                  (or (and (mf/parse-failed? decoded)
-                                                           @(:form decoded))
-                                                      (some-> decoded ::mf/form deref)
-                                                      (handler decoded))))}))
+                             :post  {:handler
+                                     (fn [{:keys [params]}]
+                                       (let [decoded (mf/handle-submit schema params)]
+                                         (list
+                                           [:div {:style {:width "50%"
+                                                          :float "left"}}
+                                            (if (mf/parse-failed? decoded)
+                                              [:span "Parse failed"]
+                                              [:span "Re-rendered"])
+                                            [:br]
+                                            @(:form decoded)]
+                                           [:div {:style {:width "50%"
+                                                          :float "left"}}
+                                            [:details
+                                             [:summary "Params"]
+                                             (pprint-pre params)]
+                                            [:details
+                                             [:summary "Decoded output"]
+                                             (pprint-pre decoded)]
+                                            (when-not (mf/parse-failed? decoded)
+                                              (list
+                                                [:br]
+                                                [:span "Output"]
+                                                [:br]
+                                                (handler (:value decoded))))])))}))
                   data)])
      :exception pretty/exception
      :data {:muuntaja muuntaja/instance

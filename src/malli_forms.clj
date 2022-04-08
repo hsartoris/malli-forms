@@ -32,22 +32,13 @@
   (def s2 [:merge s1 ::field-spec])
   (def s3 [:select-keys s1 [:a]]))
 
-(def placeholder-submit
-  "Submit name for adding a placeholder"
-  "mf-add-placeholder")
-
-(def ^:private data-root-key
+(def ^:private base-data-key
   "Key under which actual schema data will be placed in form"
-  :data)
+  "data")
 
-(def ^:private base-form-schema
-  "Base schema that the actual data schema will be placed into"
-  (m/schema
-    [:map
-     [placeholder-submit
-      {:doc "When provided, indicates target schema element to add placeholder value for" :optional true
-       ::render? false}
-      string?]]))
+(def ^:private base-options-key
+  "Key under which options for the handler will be stored in form"
+  "mf-options")
 
 (def ^:private local-registry
   {::type         [:enum
@@ -97,7 +88,42 @@
    [:multi {:dispatch :type}
     [::collection ::field-spec.collection]
     [::form       ::field-spec.form]
-    [::m/default  ::field-spec.input]]})
+    [::m/default  ::field-spec.input]]
+
+   ::options
+   [:map {:doc "Options available for various functions in this library"}
+    [::placeholder-target
+     {:doc      "When set, should match name of an input that can have a placeholder value added"
+      :optional true}
+     string?]
+    [::auto-placeholder
+     {:doc      "When true, all schema items that are able will have placeholder values added"
+      :default  true}
+     boolean?]
+    [::add-placeholder-inputs
+     {:doc      "Should input buttons be added that will trigger ::placeholder-target"
+      :default  true}
+     boolean?]
+    [::render
+     {:doc      "Function to be used to render field specs."
+      :default  table/render}
+     [:=> [:cat [:ref ::field-spec]] :any]]
+    [::validate
+     {:doc      "Should the parser also attempt to validate the provided data"
+      :default  true}
+     boolean?]
+    [::ignore-form-options
+     {:doc      "Should handle-submit skip merging options values from the form"
+      :default  false}
+     boolean?]]
+
+   ::form
+   [:map {:doc "Expected shape of data returned from form"}
+    [base-data-key {:doc "Where the provided schema will be placed"} :any]
+    [base-options-key
+     {:doc "Map of options to forms handler"
+      :optional true}
+     [:ref ::options]]]})
 
 (def registry
   "malli registry for this project"
@@ -106,20 +132,71 @@
     (mu/schemas)
     local-registry))
 
+(def ^:private ring-anti-forgery
+  "When ring.middleware.anti-forgery is available, will be bound to
+  #'ring.middleware.anti-forgery/*anti-forgery-token"
+  (try
+    (requiring-resolve 'ring.middleware.anti-forgery/*anti-forgery-token*)
+    (catch Exception _)))
+
+(defn- wrap-schema
+  "Wrap provided schema into a map that matches ::form schema"
+  [schema]
+  ;; TODO: ring-anti-forgery
+  [:map {::type   ::form
+         ::method "POST"}
+   ["__anti-forgery-token" {:optional true}
+    [:string {::type :hidden
+              ::finalize (fn [spec]
+                           (when ring-anti-forgery
+                             (assoc spec :value (deref ring-anti-forgery))))}]]
+   [base-data-key schema]
+   ["submit" {:optional true}
+    [:string {::type :submit
+              :default "Submit"}]]])
+
 (def field-spec-schema
   "Schema for a field spec"
-  (m/schema ::field-spec {:registry registry}))
+  (m/deref (m/schema ::field-spec {:registry registry})))
+
+(def ^:private key-transformer
+  "mt/key-transformer, equipped with a url-decoding step before keyword"
+  ;; TODO: can do better than this. Will need to cover map-of as well
+  (mt/key-transformer {:decode #(-> % util/url-decode keyword)}))
+
+(def ^:private default-options
+  "Decoder function that will apply default values to an ::options map"
+  (m/decoder (m/schema ::options {:registry registry})
+             (mt/transformer
+               mt/default-value-transformer
+               (mt/strip-extra-keys-transformer))))
+
+(def ^:private decode-options
+  "Decoder function that invokes a transformer stack suitable for parsing
+  options from form input; does not apply defaults"
+  (m/decoder (m/schema ::options {:registry registry})
+             (mt/transformer
+               key-transformer
+               (mt/string-transformer) ;; includes mt/json-transformer, basically
+               (mt/strip-extra-keys-transformer))))
+
 
 (defn- add-path-info
-  "Add name, id, and label to a spec, based on a path already added to it"
+  "Add name, id, and label to a spec, based on a path already added to it."
+  ;Also updates path to prepend base-data-key - do not run multiple times!"
   [spec]
-  (let [path (:path spec)
+  (let [;{:keys [path] :as spec} (update spec :path #(cons base-data-key %))
+        path (:path spec)
         input-name (or (:name spec) (path->name path))
         spec (assoc spec :name input-name)]
     (-> spec
         ;; TODO: probably gensym for ids
         (default :id    (str "mf-" input-name))
         (default :label (util/label spec)))))
+
+(def ^:private collection?
+  "Is a type a collection type? That is, either ::collection or ::form"
+  #{::form ::collection})
 
 ;; ------ building specs from a schema ------
 
@@ -311,6 +388,13 @@
   :cat
   :catn)
 
+;; TODO TODO:
+;; would be nice to be able to apply attrs on map vals, not just on the
+;; child schemas.
+;; failing this, there at least needs to be a BIG WARNING
+
+;; TODO: do I even need to keep track of real path here? just gets overwritten anyway...
+
 (defn add-field-specs
   "Walk schema structure, building field specs with entry and exit transforms.
 
@@ -350,17 +434,21 @@
                      root? (= path base-path)
                      ptype (schema-type->input-type parent)
                      ;; TODO: simplify all these crazy conditionals
-                     render? (and (not= ::collection (:type naive-spec))
+                     render? (and (not (collection? (:type naive-spec)))
                                   ;; if render? is flagged in spec, respect it
                                   (or (not (contains? naive-spec :render?))
                                       (:render? naive-spec))
                                   (or root?
-                                      (= ptype ::collection)
-                                      (= parent :map)
+                                      (collection? ptype)
+                                      ;(= ptype ::collection)
+                                      ;; TODO: can remove this right?
+                                      ;(= parent :map)
                                       (and (::render? options)
                                            (not (no-render-children parent)))))
                      ;; should a label be eventually generated for this item?
-                     label?  (and (or (not= ::collection ptype)
+                     label?  (and (or ;(not= ::collection ptype)
+                                      (not (collection? ptype))
+                                      ;; TODO: might actually be more convenient to use ::m/val here
                                       (= :map parent))
                                   ;; TODO: kinda sketch
                                   (not= ::m/in (peek (::path options))))
@@ -399,10 +487,12 @@
                  :else
                  ;; otherwise...
                  (let [naive-spec (::naive-spec options)
+                       finalize (:finalize naive-spec identity)
                        spec (-> (complete-field-spec schema naive-spec children)
                                 ;; add path after complete-field-spec in case of
                                 ;; accidental override from child specs
                                 (assoc :path path))
+                       ;; TODO: certainly remove concrete-path
                        concrete-path? (not (some #(= % ::m/in) path))
                        spec (cond-> spec
                               ;; TODO: probably remove
@@ -413,7 +503,7 @@
                               (assoc :order (map #(nth % 0) children)))]
                    ;; TODO: remove children marked no-spec and send back to inner if any
                    (-> schema
-                       (mu/update-properties assoc ::spec spec)
+                       (mu/update-properties assoc ::spec (finalize spec))
                        (m/-set-children children)))))]
        (m/-inner
          (reify m/Walker
@@ -445,7 +535,6 @@
                                  {;; on enter, ensure placeholder values are present, as
                                   ;; otherwise transform doesn't recurse to  them
                                   :enter (fn [value]
-                                           (println "Ensuring required keys on" value "with order" child-keys (or (nil? value) (map? value)))
                                            (if (or (nil? value) (map? value))
                                              (reduce #(update %1 %2 identity) value child-keys)
                                              value))}))}}})
@@ -474,18 +563,6 @@
 
 ;; ------ schema to AST based on real values ------
 
-(defn- wrap-root
-  "Wrap the root node of a collected AST with one of type ::form but otherwise
-  the same spec as the root."
-  [spec]
-  (assoc spec
-         :type ::form
-         :children [spec
-                    ;; TODO: better way to do submit button?
-                    {:type  :submit
-                     :name  "submit"
-                     :value "Submit"}]))
-
 (def ^:private prep-schema
   "Memoized version of add-field-specs"
   (memoize add-field-specs))
@@ -508,7 +585,7 @@
 (defn- index-errors
   "Provide a seq of errors as produced by m/explain, yielding a map of path to
   errors for that path, where each error will have a :message field from
-  me/error-message."
+  me/error-message. Adds provided base-level key to path."
   [errors]
   (reduce (fn [index {:keys [in] :as error}]
             (update index in (fnil conj []) (assoc error :message (me/error-message error))))
@@ -516,25 +593,23 @@
           errors))
 
 (defn collect-field-specs
-  "Given a schema, a value, and options, prepare the schema via add-field-specs,
-  then encode it with collect-specs into a renderable AST"
+  "Given a schema, a value, optional errors, and options, encode the value
+  according to the schema, then value the transformed value, turning it into a
+  ::field-spec AST"
   ([schema]
    (collect-field-specs schema nil))
   ([schema source]
    (collect-field-specs schema source {}))
   ([schema source options]
    (collect-field-specs schema source nil options))
-  ([schema source errors options]
-   (let [schema' (-> (mu/assoc base-form-schema data-root-key schema options)
-                     (prep-schema options))
-         ;(prep-schema [:map [:data schema]] options)
-         encode (m/encoder schema'
-                           (default options ::auto-placeholder true)
+  ([schema source errors {::keys [add-placeholder-inputs] :as options}]
+   (let [encode (m/encoder schema
+                           options
                            (mt/transformer
                              ensure-required-keys
                              add-placeholders
                              mt/default-value-transformer))
-         indexed-specs (index-specs schema')
+         indexed-specs (index-specs schema)
          ;; TODO: figure out why this is necessary again
          ;; specifically, the some [head ::m/in] that prevents this just being
          ;; a regular get-in
@@ -560,19 +635,20 @@
                stype (:type spec)
                children (cond
                           (= :map mtype)          (map item (:order spec))
-                          (= ::collection stype)  (seq item))
+                          (collection? stype)     (seq item))
                children (cond-> children
-                          (may-placeholder mtype)
+                          (and add-placeholder-inputs (may-placeholder mtype))
                           ;; TODO: awkward
                           (some-> vec
                                   (conj
                                     {:type    :submit
-                                     :name    placeholder-submit
+                                     :name    (path->name [base-options-key
+                                                           ::placeholder-target])
                                      :onclick "this.closest('form').noValidate=true;"
                                      :value   (path->name path)
                                      :label   "+"})))]
            (cond
-             (= ::collection stype) ;; also catches mtype :map
+             (collection? stype) ;; also catches mtype :map
              (assoc spec :children children)
 
              (:render? spec)
@@ -586,21 +662,55 @@
   "Given a value as produced by collect-field-specs and options, renders fields
   defined by AST into markup"
   ([source] (render-specs source {}))
-  ([source {:keys [render] :or {render table/render} :as options}]
-   (m/encode (m/deref field-spec-schema) source options
+  ([source {::keys [render] :as options}]
+   (m/encode field-spec-schema source options
              (mt/transformer
                {:name :render-specs
                 :encoders {:map {:leave #(some-> % render)}}}))))
 
 (defn render-form
-  "Full pipeline"
+  "Renders a form based on a schema. Accepts various optional arguments:
+    - source: initial data to seed form with. default: nil
+    - options: malli options map. see options-schema for custom keys. default: {}
+    - errors: seq of errors produced by m/explain
+
+  Rendering a form consists of the following steps:
+    1. Provided schema is wrapped in a map, under the key base-data-key. This
+      allows for consistent handling of schemas that aren't maps, as well as
+      allowing for storing other data in the form, such as an anti-forgery
+      token, or signals to this library to help with adding placeholder values.
+    2. Wrapped schema is run through add-field-specs, which walks the entire
+      schema, adding path information and calculating various attributes, such
+      as whether or not the given item should render as a field, input type,
+      etc., based on the schema and sometimes its children.
+    3. Source data is wrapped in a map under base-data-key (TODO TODO), and
+      transformed according to the prepared schema, ensuring that required map
+      keys are present, adding default values, and adding placeholders based on
+      the provided options; i.e., either in all possible cases, or to a
+      particular field.
+    4. The transformed data is walked, using the path to each location in the
+      data to locate a relevant field spec, adding any errors, and outputting
+      nil, the field spec, or a collection field spec with the original value
+      under the key :children; at this point, the output is an AST of the type
+      defined in the local registry as ::field-spec.
+    5. The AST is transformed by calling the function under ::render in the
+      options (default: malli-forms.render.table/render) with each node. A good
+      option for this function is a multimethod dispatching on :type; it should
+      return something representing the HTML-encoded form, be it hiccup, or a
+      String directly; depends on what your rendering pipeline looks like."
   ([schema] (render-form schema nil))
   ([schema source] (render-form schema source {}))
   ([schema source options] (render-form schema source nil options))
   ([schema source errors options]
-   (-> (collect-field-specs schema source errors options)
-       wrap-root
-       (render-specs options))))
+   (let [options (default-options options)]
+     (-> (wrap-schema schema) ;; 1
+         (prep-schema options) ;; 2
+         (collect-field-specs {base-data-key source}
+                              (map (fn [error]
+                                     (update error :in #(cons base-data-key %)))
+                                   errors)
+                              options)
+         (render-specs options)))))
 
 ;; ------ parsing ------
 
@@ -634,8 +744,7 @@
 
 (def parse-stack
   "Transformer stack for parsing input data"
-  [;; TODO: can do better than this. Will need to cover map-of as well
-   (mt/key-transformer {:decode keyword})
+  [key-transformer
    mt/default-value-transformer ;; TODO: options for this
    ensure-required-keys
    unnest-seq-transformer
@@ -657,12 +766,11 @@
 
 (defn parse
   "Simple parse using schema against data. Throws on failure.
-  data should be as returned by ring's nested-params middleware."
+  data should be as returned by ring's nested-params middleware, but should NOT
+  be wrapped in the containing map - that is, the data should match the schema."
   ([schema data] (parse schema data {}))
-  ([schema data {:keys [validate] :or {validate true} :as options}]
-   (let [;; wrap schema in base form schema
-         schema (mu/assoc base-form-schema :data schema options)
-         decode (m/decoder schema options parse-transformer)
+  ([schema data {::keys [validate] :as options}]
+   (let [decode (m/decoder schema options parse-transformer)
          explain (if validate (m/explainer schema options) (constantly nil))
          decoded (try
                    (decode data)
@@ -672,37 +780,38 @@
                                       :schema   schema
                                       :options  options}
                                      e))))]
-     (flush)
-     (println "Decoded:" decoded)
      (if-some [error (explain decoded)]
        (-> error
-           ;(update :value :data)
            (assoc :source data
                   :options options)
            map->ParseFailure)
-       (get decoded data-root-key)))))
+       {:schema schema
+        :value  decoded}))))
 
 (defn handle-submit
-  "Dispatches to `parse`, but attaches a re-rendered form in either the failure
-  case or when placeholder-submit is provided in the form."
-  ([schema data] (handle-submit schema data {}))
-  ([schema data options]
-   (let [parsed (parse schema data options)
-         placeholder-target (get data placeholder-submit)
+  "Provide original schema and data as returned by ring-nested-params directly;
+  that is, a map containing the desired value to match against `schema` under
+  base-data-key.
+  Updates options based on form data, unless ::ignore-form-options is set.
+  Returns a map containing :value, the desired parsed value, :schema, the
+  provided schema, and :form, a delay that, when realized, re-renders the form
+  with the new value and any parse errors encountered. In the scenario that
+  parse errors are encountered, they will be included under :errors."
+  ([schema raw-data] (handle-submit schema raw-data {}))
+  ([schema raw-data options]
+   (println "Parsing raw data" raw-data)
+   (let [options (default-options options)
+         ;; TODO: handle potential failure to decode options
          options (cond-> options
-                   placeholder-target
-                   (assoc ::placeholder-target placeholder-target))]
-     (cond
-       (parse-failed? parsed)
-       (assoc parsed :form (delay (render-form schema
-                                               (:value parsed)
-                                               (:errors parsed)
-                                               options)))
-       placeholder-target
-       (assoc parsed ::form (delay (render-form schema parsed options)))
-
-       :else parsed))))
-
+                   (not (::ignore-form-options options))
+                   (conj (decode-options (get raw-data base-options-key))))
+         _ (println "Final options:" options)
+         data (get raw-data base-data-key)
+         parsed (parse schema data options)]
+     (assoc parsed :form (delay (render-form schema
+                                             (:value parsed)
+                                             (:errors parsed)
+                                             options))))))
 
 ;; remaining:
 ;; - [ ] Field specs:

@@ -5,9 +5,19 @@
     [clojure.string :as str]
     [malli.core :as-alias m]
     ;; TODO
-    [reitit.impl :refer [url-encode #_url-decode]]))
+    [reitit.impl]))
 
 ;; ------ general utilities -------
+
+(defn url-encode
+  "URL-encode a string, including ."
+  [s]
+  (-> s reitit.impl/url-encode (str/replace "." "%2E")))
+
+(defn url-decode
+  "URL-decode a string"
+  [s]
+  (reitit.impl/url-decode s))
 
 (defn unqualify
   ":some/kw -> :kw"
@@ -97,7 +107,7 @@
   (cond
     (keyword? s) (recur (subs (str s) 1))
     (not (string? s)) (recur (str s))
-    :else (str/replace (url-encode s) "." "_DOT_")))
+    :else (url-encode s)))
 
 (defn path->name
   "Takes a path to a field in a nested data structure and produces a suitable
@@ -148,6 +158,7 @@
    :children
    :order
    :options
+   :finalize
    :malli.core/type])
 
 (defn props->attrs

@@ -142,9 +142,9 @@
 (defn- wrap-schema
   "Wrap provided schema into a map that matches ::form schema"
   [schema]
-  ;; TODO: ring-anti-forgery
   [:map {::type   ::form
          ::method "POST"}
+   ;; TODO: test
    ["__anti-forgery-token" {:optional true}
     [:string {::type :hidden
               ::finalize (fn [spec]
@@ -492,12 +492,7 @@
                                 ;; add path after complete-field-spec in case of
                                 ;; accidental override from child specs
                                 (assoc :path path))
-                       ;; TODO: certainly remove concrete-path
-                       concrete-path? (not (some #(= % ::m/in) path))
                        spec (cond-> spec
-                              ;; TODO: probably remove
-                              concrete-path? (assoc :concrete-path? true)
-
                               ;; TODO: better ordering control
                               (= :map (::m/type spec))
                               (assoc :order (map #(nth % 0) children)))]
@@ -540,6 +535,10 @@
                                              value))}))}}})
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholders
+
+;; TODO TODO: I think this is the only place that actually uses the :path
+;; set by add-field-specs. If it could be straightforwardly restricted to this
+;; use case, add-field-specs could potentially be much simpler
 (def add-placeholders
   "Transformer that adds placeholder values by schema type"
   {:name :add-placeholders

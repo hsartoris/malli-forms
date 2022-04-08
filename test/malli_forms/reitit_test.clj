@@ -48,7 +48,7 @@
                   (or (nil? r2) ;; only one
                       (and (< (:first r1) (:first r2))
                            (< (:last r1) (:last r2)))))
-                (partition-all 2 1 ranges)))]]]])
+                (partition-all 2 1 (sort-by :first ranges))))]]]])
 
 (def ex-input
   "input valid for ex-schema"

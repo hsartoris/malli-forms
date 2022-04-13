@@ -25,7 +25,8 @@
    ::type
    ::attributes
    ;; TODO: will/should this appear?
-   ::render?])
+   ::render?
+   ::placeholder-fn])
 
 (comment
   (def s1 [:map [:a string?] [:b int?]])
@@ -58,6 +59,10 @@
    ::render?      [boolean?
                    {:doc "When true, this field spec should be preserved as it is ready to render"}]
    ::path         [:sequential :any]
+   ::placeholder-fn [fn?
+                     {:doc "1-arity function that, when called with a collection,
+                           adds a placeholder value to that collection. Be prepared
+                           for the inbound value to be nil."}]
    ::field-spec.partial (into [:map {:doc "What a field spec will look like
                                           when one or more fields is defined in
                                           the properties of a schema"}]
@@ -179,20 +184,6 @@
                key-transformer
                (mt/string-transformer) ;; includes mt/json-transformer, basically
                (mt/strip-extra-keys-transformer))))
-
-
-(defn- add-path-info
-  "Add name, id, and label to a spec, based on a path already added to it."
-  ;Also updates path to prepend base-data-key - do not run multiple times!"
-  [spec]
-  (let [;{:keys [path] :as spec} (update spec :path #(cons base-data-key %))
-        path (:path spec)
-        input-name (or (:name spec) (path->name path))
-        spec (assoc spec :name input-name)]
-    (-> spec
-        ;; TODO: probably gensym for ids
-        (default :id    (str "mf-" input-name))
-        (default :label (util/label spec)))))
 
 (def ^:private collection?
   "Is a type a collection type? That is, either ::collection or ::form"
@@ -425,9 +416,6 @@
      (letfn [(inner* [walker schema path {::keys [parent] :as options}]
                (let [;; TODO: elsewhere
                      no-render-children #{:and :andn :or :orn}
-                     no-add-path (conj no-render-children :maybe ::m/schema :schema :ref ::m/val)
-                     add-to-path (not (or (no-add-path parent)
-                                          (contains? options ::use-child)))
                      child-idx (::use-child (m/properties schema))
                      stype (m/type schema)
                      naive-spec (extract-field-spec schema)
@@ -440,18 +428,8 @@
                                       (:render? naive-spec))
                                   (or root?
                                       (collection? ptype)
-                                      ;(= ptype ::collection)
-                                      ;; TODO: can remove this right?
-                                      ;(= parent :map)
                                       (and (::render? options)
                                            (not (no-render-children parent)))))
-                     ;; should a label be eventually generated for this item?
-                     label?  (and (or ;(not= ::collection ptype)
-                                      (not (collection? ptype))
-                                      ;; TODO: might actually be more convenient to use ::m/val here
-                                      (= :map parent))
-                                  ;; TODO: kinda sketch
-                                  (not= ::m/in (peek (::path options))))
                      reqd? (and render?
                                 (not= stype :maybe) ;; TODO: good approach?
                                 (if (= parent :map)
@@ -463,21 +441,16 @@
                           (assoc ::parent stype
                                  ::naive-spec (cond-> naive-spec
                                                 render? (assoc :render? true)
-                                                reqd?   (assoc :required true)
-                                                label?  (assoc :label? true))
+                                                reqd?   (assoc :required true))
                                  ;; TODO: replace with just referencing naive parent spec
                                  ::render?  render?
                                  ::required reqd?)
                           (cond->
                             child-idx
-                            (assoc ::use-child child-idx)
-
-                            (and add-to-path (seq path))
-                            (update ::path conj (peek path))))
+                            (assoc ::use-child child-idx)))
                       (m/-walk schema walker path))))
                                 
-             (outer* [schema _abs-path children
-                      {::keys [use-child path] :as options}]
+             (outer* [schema _abs-path children {::keys [use-child] :as options}]
                (cond
                  use-child (nth children use-child)
 
@@ -488,10 +461,7 @@
                  ;; otherwise...
                  (let [naive-spec (::naive-spec options)
                        finalize (:finalize naive-spec identity)
-                       spec (-> (complete-field-spec schema naive-spec children)
-                                ;; add path after complete-field-spec in case of
-                                ;; accidental override from child specs
-                                (assoc :path path))
+                       spec (complete-field-spec schema naive-spec children)
                        spec (cond-> spec
                               ;; TODO: better ordering control
                               (= :map (::m/type spec))
@@ -515,50 +485,52 @@
                 ::m/walk-entry-vals true
                 ::m/walk-schema-refs true))))))
 
-(defn- placeholder-target?
-  "Pass a schema and an options map; checks if the path specified by the
-  schema's spec matches the placeholder-target in the options map"
-  [schema {::keys [placeholder-target]}]
-  (= placeholder-target (-> schema m/properties ::spec :path path->name)))
-
 (def ensure-required-keys
   "Transformer that ensures that required keys are present in maps by adding
   nil values when missing."
-  {:name :ensure-required-keys
-   :encoders {:map {:compile (fn [schema _]
-                               (let [child-keys (map #(nth % 0) (m/children schema))]
-                                 {;; on enter, ensure placeholder values are present, as
-                                  ;; otherwise transform doesn't recurse to  them
-                                  :enter (fn [value]
-                                           (if (or (nil? value) (map? value))
-                                             (reduce #(update %1 %2 identity) value child-keys)
-                                             value))}))}}})
+  (let [coders {:map {:compile (fn [schema _]
+                                 (let [child-keys (map #(nth % 0) (m/children schema))]
+                                   ;; on enter, ensure placeholder values are present, as
+                                   ;; otherwise transform doesn't recurse to  them
+                                   (fn [value]
+                                     (if (or (nil? value) (map? value))
+                                       (reduce #(update %1 %2 identity) value child-keys)
+                                       value))))}}]
+    {:name :ensure-required-keys
+     :encoders coders
+     :decoders coders}))
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholders
 
-;; TODO TODO: I think this is the only place that actually uses the :path
-;; set by add-field-specs. If it could be straightforwardly restricted to this
-;; use case, add-field-specs could potentially be much simpler
-(def add-placeholders
-  "Transformer that adds placeholder values by schema type"
-  {:name :add-placeholders
-   :encoders {:set {:compile (fn [schema options]
-                               (cond
-                                 (placeholder-target? schema options)
-                                 #((fnil conj #{}) % nil)
+(def ^:private auto-placeholder-fns
+  "auto-placeholder functions by malli type. differs from placeholder-fns in
+  that these return a collection with a placeholder value when no value exists
+  for the collection on the whole"
+  {:set     #(or % #{nil})
+   :map-of  #(or % {nil nil})})
 
-                                 (::auto-placeholder options)
-                                 #(or % #{nil})))}
-              :map-of {:compile (fn [schema options]
-                                  (cond
-                                    (placeholder-target? schema options)
-                                    #(assoc % nil nil)
-                                    (::auto-placeholder options)
-                                    #(or % {nil nil})))}}})
+(def auto-placeholder
+  "Transformer that adds placeholder values by schema type"
+  (let [coders (into {}
+                     (map (fn [[mtype placeholder-fn]]
+                            [mtype {:compile (fn [_ options]
+                                               (when (::auto-placeholder options)
+                                                 placeholder-fn))}]))
+                     auto-placeholder-fns)]
+    {:name :add-placeholders
+     :encoders coders
+     :decoders coders}))
+
+(def ^:private placeholder-fns
+  "functions that add a placeholder value to a collection, by malli type.
+  differs from auto-placeholder-fns in that these also update an existing
+  collection to add a new placeholder value within it"
+  {:set     #((fnil conj #{}) % nil)
+   :map-of  #(assoc % nil nil)})
 
 (def ^:private may-placeholder
-  "Malli types that support adding a placeholder value"
-  (set (keys (:encoders add-placeholders))))
+  "set of malli types of collections that support having a placeholder value added"
+  (set (keys placeholder-fns)))
 
 ;; ------ schema to AST based on real values ------
 
@@ -570,16 +542,19 @@
   "Memoized version of m/encoder"
   (memoize m/encoder))
 
-(defn- index-specs
-  "Produce an index into the given schema, consisting of nested maps whose keys
-  are elements in a schema :in path, or the special key ::spec, whose value
-  will be the spec corresponding with the schema at that path"
+(defn schema-index
+  "Provide a schema; receive a function that, when called with a value path (as
+  in util/pathwalk), returns the subschema associated with that path"
   [schema]
-  (reduce
-    (fn [index {:keys [in schema]}]
-      (assoc-in index (conj in ::spec) (::spec (m/properties schema))))
-    {}
-    (mu/subschemas schema)))
+  (let [index (reduce (fn [idx {:keys [in schema]}]
+                        (assoc-in idx (conj in ::schema) schema))
+                      {} (mu/subschemas schema))]
+    (fn [path]
+      (loop [cursor index
+             [head & tail :as path] path]
+        (if (empty? path)
+          (get cursor ::schema)
+          (some-> (some cursor [head ::m/in]) (recur tail)))))))
 
 (defn- index-errors
   "Provide a seq of errors as produced by m/explain, yielding a map of path to
@@ -591,6 +566,24 @@
           {}
           errors))
 
+
+(def ^:private xf-placeholders+defaults
+  "Transformer that applies placeholders and default values"
+  (mt/transformer
+    ensure-required-keys
+    auto-placeholder
+    mt/default-value-transformer))
+
+(defn- add-path-info
+  "Add name, id, and label to a spec, based on a path already added to it."
+  [spec]
+  (let [path (:path spec)
+        input-name (or (:name spec) (path->name path))
+        spec (assoc spec :name input-name)]
+    (-> spec
+        (default :id    (str "mf-" input-name))
+        (default :label (util/label spec)))))
+
 (defn collect-field-specs
   "Given a schema, a value, optional errors, and options, encode the value
   according to the schema, then value the transformed value, turning it into a
@@ -601,35 +594,28 @@
    (collect-field-specs schema source {}))
   ([schema source options]
    (collect-field-specs schema source nil options))
-  ([schema source errors {::keys [add-placeholder-inputs] :as options}]
-   (let [encode (m/encoder schema
-                           options
-                           (mt/transformer
-                             ensure-required-keys
-                             add-placeholders
-                             mt/default-value-transformer))
-         indexed-specs (index-specs schema)
-         ;; TODO: figure out why this is necessary again
-         ;; specifically, the some [head ::m/in] that prevents this just being
-         ;; a regular get-in
-         path->spec (fn [path]
-                      (loop [cursor indexed-specs
-                             [head & tail :as path] path]
-                        (if (empty? path)
-                          (get cursor ::spec)
-                          (some-> (some cursor [head ::m/in])
-                                  (recur tail)))))
+  ([schema source errors {::keys [add-placeholder-inputs
+                                  placeholder-target] :as options}]
+   (let [path->schema (memoize (schema-index schema))
+         path->spec (fn [path] (some-> (path->schema path) m/properties ::spec))
          path->errors (index-errors errors)]
-     ;; TODO: problem: error paths are in terms of the decoded data, before
-     ;; any placeholder application (though not default values, as they're
-     ;; applied in the parse stack as well). Really, this means that errors
-     ;; should be retrieved *before* placeholder application, but it is also
-     ;; necessary to apply placeholders
      (util/pathwalk
-       (fn [item path]
+       (fn inner [item path]
+         (let [subschema (path->schema path)
+               mtype (m/type subschema)
+               add-placeholder (when (= placeholder-target (path->name path))
+                                 (or (-> subschema m/properties ::spec :placeholder-fn)
+                                     (placeholder-fns mtype)))]
+           (if add-placeholder
+             ;; TODO: actually, we really just want to call this encoder on the added item
+             ((encoder subschema options xf-placeholders+defaults)
+              (add-placeholder item))
+             item)))
+       (fn outer [item path]
          (let [errors (path->errors path)
                spec (cond-> (path->spec path)
-                      (some? errors) (assoc :errors errors))
+                      (some? errors) (assoc :errors errors)
+                      :always (assoc :path path))
                mtype (::m/type spec)
                stype (:type spec)
                children (cond
@@ -652,8 +638,7 @@
 
              (:render? spec)
              (-> spec (assoc :value item, :path path) add-path-info))))
-       (encode source)))))
-
+       source))))
 
 ;; ------ rendering AST to markup ------
 
@@ -701,14 +686,16 @@
   ([schema source] (render-form schema source {}))
   ([schema source options] (render-form schema source nil options))
   ([schema source errors options]
-   (let [options (default-options options)]
-     (-> (wrap-schema schema) ;; 1
-         (prep-schema options) ;; 2
-         (collect-field-specs {base-data-key source}
-                              (map (fn [error]
-                                     (update error :in #(cons base-data-key %)))
-                                   errors)
-                              options)
+   (let [options (default-options options)
+         wrapped (-> (wrap-schema schema) (prep-schema options))]
+     (-> (collect-field-specs
+           wrapped
+           ((encoder wrapped options xf-placeholders+defaults)
+            {base-data-key source})
+           (map (fn [error]
+                  (update error :in #(cons base-data-key %)))
+                errors)
+           options)
          (render-specs options)))))
 
 ;; ------ parsing ------
@@ -741,11 +728,15 @@
   "Memoized m/decoder"
   (memoize m/decoder))
 
+(def ^:private explainer
+  "Memoized m/explainer"
+  (memoize m/explainer))
+
+;; TODO: transformer that does what the silly middleware in malli-forms.reitit-test is doing by stripping out empty values
 (def parse-stack
   "Transformer stack for parsing input data"
   [key-transformer
-   mt/default-value-transformer ;; TODO: options for this
-   ensure-required-keys
+   xf-placeholders+defaults
    unnest-seq-transformer
    (mt/string-transformer) ;; includes mt/json-transformer, basically
    (mt/strip-extra-keys-transformer)])
@@ -769,8 +760,8 @@
   be wrapped in the containing map - that is, the data should match the schema."
   ([schema data] (parse schema data {}))
   ([schema data {::keys [validate] :as options}]
-   (let [decode (m/decoder schema options parse-transformer)
-         explain (if validate (m/explainer schema options) (constantly nil))
+   (let [decode (decoder schema options parse-transformer)
+         explain (if validate (explainer schema options) (constantly nil))
          decoded (try
                    (decode data)
                    (catch Exception e
@@ -798,13 +789,11 @@
   parse errors are encountered, they will be included under :errors."
   ([schema raw-data] (handle-submit schema raw-data {}))
   ([schema raw-data options]
-   (println "Parsing raw data" raw-data)
    (let [options (default-options options)
          ;; TODO: handle potential failure to decode options
          options (cond-> options
                    (not (::ignore-form-options options))
                    (conj (decode-options (get raw-data base-options-key))))
-         _ (println "Final options:" options)
          data (get raw-data base-data-key)
          parsed (parse schema data options)]
      (assoc parsed :form (delay (render-form schema
@@ -825,4 +814,4 @@
 ;;  - part of above
 ;; [ ] simple, configurable middleware to parse
 ;; [ ] optional reitit coercion module
-;; [ ] ring-anti-forgery
+;; [X] ring-anti-forgery

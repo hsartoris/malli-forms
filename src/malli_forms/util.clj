@@ -65,39 +65,49 @@
 ;; ------ walking, with inspiration from https://gist.github.com/stuarthalloway/b6d1c8766c747fd81018
 
 (defprotocol PathWalkable
-  (inner [form f path-to-form]
-         "Replace subforms of form with (f subform path-to-subform), where
-         path-to-subform is built from path-to-form"))
+  (pathwalk* [form inner outer path-to-form]
+             "Replace subforms of form with (pathwalk inner outer subform path-to-subform),
+             where path-to-subform is built from path-to-form"))
 
 (defn pathwalk
-  "Postwalk form, replacing subforms with (f subform path-to-subform)"
-  ([f form] (pathwalk f form []))
-  ([f form path]
-   (f (inner form f path) path)))
+  "Walks form with outer and optional inner function.
+  Calls `(inner form path), then recursively walks result, then yields `(outer result path)`"
+  ([outer form] (pathwalk (fn [form _path] form) outer form))
+  ([inner outer form] (pathwalk inner outer form []))
+  ([inner outer form path]
+   (-> (inner form path)
+       (pathwalk* inner outer path)
+       (outer path))))
 
 (extend-protocol PathWalkable
   java.util.List
-  (inner [form f path]
+  (pathwalk* [form in out path]
+    ;; TODO: should subform have in called with path updated?
     (map-indexed
       (fn [idx subform]
-        (pathwalk f subform (conj path idx)))
+        (pathwalk in out subform (conj path idx)))
       form))
+  clojure.lang.PersistentVector
+  (pathwalk* [form in out path]
+    ;; note: dispatches to pathwalk* intentionally - don't want to call outer on result yet
+    (into [] (pathwalk* (seq form) in out path)))
+
   java.util.Map
-  (inner [form f path]
-    (reduce-kv (fn [out k v]
-                 (assoc out k (pathwalk f v (conj path k))))
+  (pathwalk* [form in out path]
+    (reduce-kv (fn [ret k v]
+                 (assoc ret k (pathwalk in out v (conj path k))))
                form form))
   java.util.Set
-  (inner [form f path]
-    (into (empty form)
-          (map #(pathwalk f % (conj path %)))
+  (pathwalk* [form in out path]
+    (into #{}
+          (map #(pathwalk in out % (conj path %)))
           form))
-  ;; bottom out on Object/nil - will be wrapped in call to (f path subform),
+  ;; bottom out on Object/nil - will be wrapped in call to (outer path subform),
   ;; so just yield form unchanged
   java.lang.Object
-  (inner [form _ _] form)
+  (pathwalk* [form _ _ _] form)
   nil
-  (inner [_ _ _] nil))
+  (pathwalk* [_ _ _ _] nil))
 
 
 ;; ------ name/label handling ------
@@ -120,13 +130,25 @@
       (apply str head (when tail
                         (mapv #(format "[%s]" %) tail))))))
 
+;; TODO: total hack
+(defprotocol Labeled
+  (label* ^String [this] "Get a String label for an object, or nil"))
+
+(extend-protocol Labeled
+  clojure.lang.Keyword
+  (label* [kw] (subs (str kw) 1))
+  String
+  (label* [s] s)
+  Object
+  (label* [_] nil)
+  nil
+  (label* [_] nil))
+
 ;; TODO: test
 (defn value->label
   "Process a value into a form label"
   [v]
-  (some-> v str not-empty
-          (cond->
-            (keyword? v) (subs 1))
+  (some-> v label* not-empty
           (str/replace #"[\/\._-]" " ")
           (str/replace #"\bid(?:\b|\z)" "ID")
           (#(str (.toUpperCase (subs % 0 1)) (subs % 1)))))
@@ -135,18 +157,21 @@
   "Takes a path to a field in a nested data structure and attempts to produce
   a human-readable label. Drops first item in path as it will be the data node"
   [path]
+  ;; TODO: remove hardcoded hack to do with appending things to path
   (some-> path rest last value->label))
 
 (defn label
   "When appropriate, get a best-guess label for a spec. Assumes :name is set
   correctly."
   [spec]
+  (println spec)
   (or (:label spec)
-      (when (:label? spec)
-        (or ;; TODO: never used at the moment
-            (some-> spec ::m/name value->label)
-            (path->label (:path spec))))))
-            ;(value->label (:name spec))))))
+      ;; TODO: never used at the moment
+      (some-> spec ::m/name value->label)
+      (let [path (:path spec)]
+        ;; TODO: maybe just blacklist things
+        (when-not (= ::m/in (last path))
+          (path->label path)))))
 
 ;; TODO: doesn't seem like this belongs here
 ;; TODO: review for consistency

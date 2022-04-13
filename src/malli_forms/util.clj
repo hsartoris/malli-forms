@@ -3,21 +3,23 @@
   (:require
     [clojure.set :as set]
     [clojure.string :as str]
-    [malli.core :as-alias m]
-    ;; TODO
-    [reitit.impl]))
+    [malli.core :as-alias m])
+  (:import
+    (java.net URLEncoder URLDecoder)))
+
+(set! *warn-on-reflection* true)
 
 ;; ------ general utilities -------
 
 (defn url-encode
   "URL-encode a string, including ."
-  [s]
-  (-> s reitit.impl/url-encode (str/replace "." "%2E")))
+  [^String s]
+  (-> s (URLEncoder/encode "UTF-8") (str/replace "." "%2E")))
 
 (defn url-decode
   "URL-decode a string"
-  [s]
-  (reitit.impl/url-decode s))
+  [^String s]
+  (URLDecoder/decode s "UTF-8"))
 
 (defn unqualify
   ":some/kw -> :kw"

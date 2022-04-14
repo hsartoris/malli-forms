@@ -29,7 +29,12 @@
 (defn default
   "If `k` is not set in `m`, set it to `v`."
   [m k v]
-  (if (some? (get m k)) m (assoc m k v)))
+  (if (some? (find m k)) m (assoc m k v)))
+
+(defn default-in
+  "If `path` has no value set in nested data structure `m`, sets it to `v`."
+  [m path v]
+  (update-in m (butlast path) default (last path) v))
 
 (def ^:private sorted-set-by-count
   (sorted-set-by
@@ -139,8 +144,14 @@
   (label* [kw] (subs (str kw) 1))
   String
   (label* [s] s)
-  Object
+  java.util.Map
   (label* [_] nil)
+  java.util.List
+  (label* [_] nil)
+  java.util.Set
+  (label* [_] nil)
+  Object
+  (label* [obj] (str obj))
   nil
   (label* [_] nil))
 

@@ -3,7 +3,7 @@
   other render function is provided."
   (:require
     [malli-forms :as-alias mf]
-    [malli-forms.util :as util :refer [default
+    [malli-forms.util :as util :refer [default default-in
                                        path->name
                                        props->attrs
                                        value->label]]))
@@ -44,12 +44,12 @@
          :let [label (value->label option)
                id (path->name (conj path option))
                sel? (= option value)]]
-     (list
-       [:label {:for id} label]
-       [:input (props->attrs (assoc spec
-                                    :checked  sel?
-                                    :id       id
-                                    :value    (str option)))]))
+     [:div.form-row
+      [:input (props->attrs (assoc spec
+                                   :checked  sel?
+                                   :id       id
+                                   :value    (str option)))]
+      [:label {:for id} label]])
    (error-span spec)])
 
 (defmethod render :select
@@ -80,7 +80,8 @@
   [:fieldset
    (when-some [l (util/label spec)]
      [:legend l])
-   (interpose [:br] (seq children))
+   (seq children)
+   ;(interpose [:br] (seq children))
    (error-span spec)])
 
 (defmethod render ::mf/form
@@ -88,9 +89,11 @@
   [:form
    (-> (props->attrs spec)
        (default :method "POST") ;; TODO: better way of defaulting
-       (assoc-in [:style :display] :table))
+       (default-in [:style :display] :table)
+       (default-in [:style :border-collapse] :separate)
+       (default-in [:style :border-spacing] "0 5px"))
    [:style
-    "label, input { display: table-cell; margin-bottom: 10px; }
+    "label, input { display: table-cell; }
     div.form-row { display: table-row; }
     label { padding-right: 10px; }
     span.error { font-size: 80%; color: red; }"]

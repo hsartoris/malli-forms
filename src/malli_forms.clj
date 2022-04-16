@@ -152,6 +152,7 @@
    ;; TODO: test
    ["__anti-forgery-token" {:optional true}
     [:string {::type :hidden
+              ;; TODO: I don't like this solution
               ::finalize (fn [spec]
                            (when ring-anti-forgery
                              (assoc spec :value (deref ring-anti-forgery))))}]]
@@ -188,6 +189,11 @@
 (def ^:private collection?
   "Is a type a collection type? That is, either ::collection or ::form"
   #{::form ::collection})
+
+(def ^:private no-label-children
+  "Malli types whose children should not be labeled"
+  ;; TODO: exhaustive?
+  #{:sequential :vector :set})
 
 ;; ------ building specs from a schema ------
 
@@ -438,8 +444,8 @@
                                   ;; otherwise just default to root is required
                                   (or root? (::required options))))]
                  (->> (-> (dissoc options ::use-child)
-                          (assoc ::parent stype
-                                 ::naive-spec (cond-> naive-spec
+                          (assoc ::parent stype ;; pass to children
+                                 ::naive-spec (cond-> (assoc naive-spec :parent parent)
                                                 render? (assoc :render? true)
                                                 reqd?   (assoc :required true))
                                  ;; TODO: replace with just referencing naive parent spec
@@ -582,7 +588,9 @@
         spec (assoc spec :name input-name)]
     (-> spec
         (default :id    (str "mf-" input-name))
-        (default :label (util/label spec)))))
+        (cond->
+          (not (no-label-children (:parent spec)))
+          (default :label (util/label spec))))))
 
 (defn collect-field-specs
   "Given a schema, a value, optional errors, and options, encode the value
@@ -619,9 +627,9 @@
                mtype (::m/type spec)
                stype (:type spec)
                children (cond
-                          (= :map mtype)          (map item (:order spec))
-                          (collection? stype)     (seq item))
-               children (cond-> children
+                          (= :map mtype)      (keep item (:order spec))
+                          (collection? stype) (filter some? item))
+               children (cond-> (seq children)
                           (and add-placeholder-inputs (may-placeholder mtype))
                           ;; TODO: awkward
                           (some-> vec
@@ -807,6 +815,9 @@
 ;;    - [X] strip internal keys before rendering
 ;;      - see util/internal-attrs
 ;;    - [X] store malli type for utility
+;; - [ ] simplify add-field-specs walker
+;; - [ ] use new mt default values to populate all keys when available
+;; - [ ] integrate functionality currently in middleware in mfrt to remove nil keys
 ;; [X] format errors into rendered form
 ;; [X] attempt parse macro
 ;;  - just function

@@ -175,14 +175,11 @@
   "When appropriate, get a best-guess label for a spec. Assumes :name is set
   correctly."
   [spec]
-  (println spec)
   (or (:label spec)
+      
       ;; TODO: never used at the moment
       (some-> spec ::m/name value->label)
-      (let [path (:path spec)]
-        ;; TODO: maybe just blacklist things
-        (when-not (= ::m/in (last path))
-          (path->label path)))))
+      (path->label (:path spec))))
 
 ;; TODO: doesn't seem like this belongs here
 ;; TODO: review for consistency

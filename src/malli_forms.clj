@@ -121,7 +121,6 @@
      {:doc      "Should handle-submit skip merging options values from the form"
       :default  false}
      boolean?]]
-
    ::form
    [:map {:doc "Expected shape of data returned from form"}
     [base-data-key {:doc "Where the provided schema will be placed"} :any]
@@ -152,14 +151,20 @@
    ;; TODO: test
    ["__anti-forgery-token" {:optional true}
     [:string {::type :hidden
-              ;; TODO: I don't like this solution
-              ::finalize (fn [spec]
-                           (when ring-anti-forgery
-                             (assoc spec :value (deref ring-anti-forgery))))}]]
+              :encode/anti-forgery (when ring-anti-forgery
+                                     (fn [_] (deref ring-anti-forgery)))}]]
    [base-data-key schema]
    ["submit" {:optional true}
     [:string {::type :submit
               :default "Submit"}]]])
+
+(def ^:private xf-anti-forgery
+  "Transformer that adds value for __anti-forgery-token. Should NOT be run when
+  parsing a user-provided value, as it may erroneously add a valid token."
+  (mt/transformer
+    {:name :anti-forgery}))
+     ;:encoders {::anti-forgery-token (when ring-anti-forgery
+     ;                                  (fn [_] (deref ring-anti-forgery)))}}))
 
 (def field-spec-schema
   "Schema for a field spec"
@@ -309,12 +314,34 @@
   ;; Not needed to cover :merge, :select-keys, :union, as they are derefed out
   )
 
+(defmethod complete-field-spec :map
+  [_ spec children]
+  ;; TODO: better ordering control
+  (assoc spec :order (map #(nth % 0) children)))
+
 (defmethod complete-field-spec :or
   [_ spec children]
   (->> children schemas->specs util/intersect-maps (into spec)))
 (defmethod complete-field-spec :and
   [_ spec children]
   (->> children schemas->specs util/intersect-maps (into spec)))
+
+;; TODO
+(defmethod complete-field-spec :orn
+  [_ spec children]
+  ;(println spec children)
+  (let [child-specs (schemas->specs (map #(nth % 2) children))]
+    (if (apply = (map :type child-specs))
+      (-> (assoc spec ::m/type :or) ;; TODO: good idea?
+          (into (util/intersect-maps child-specs)))
+      ;; TODO
+      spec)))
+      ;(assoc spec :child-fn
+      ;       (into {}
+      ;             (map (fn [child]
+      ;                    [(nth child 0) (schema->spec (nth child 2))]))
+      ;             children)))))
+(defmethod complete-field-spec :andn [_ _ _])
 
 (defmethod complete-field-spec :maybe
   ;; any properties set explicitly on this schema, under those of child, and
@@ -372,10 +399,6 @@
 (defmethod complete-field-spec :enum
   [_ spec children]
   (assoc spec :options children))
-
-;; TODO
-(defmethod complete-field-spec :orn [_ _ _])
-(defmethod complete-field-spec :andn [_ _ _])
 
 ;;????????
 (comment
@@ -467,11 +490,7 @@
                  ;; otherwise...
                  (let [naive-spec (::naive-spec options)
                        finalize (:finalize naive-spec identity)
-                       spec (complete-field-spec schema naive-spec children)
-                       spec (cond-> spec
-                              ;; TODO: better ordering control
-                              (= :map (::m/type spec))
-                              (assoc :order (map #(nth % 0) children)))]
+                       spec (complete-field-spec schema naive-spec children)]
                    ;; TODO: remove children marked no-spec and send back to inner if any
                    (-> schema
                        (mu/update-properties assoc ::spec (finalize spec))
@@ -607,6 +626,7 @@
    (let [path->schema (memoize (schema-index schema))
          path->spec (fn [path] (some-> (path->schema path) m/properties ::spec))
          path->errors (index-errors errors)]
+     ;; TODO: ok, orn handling is gonna be hard
      (util/pathwalk
        (fn inner [item path]
          (let [subschema (path->schema path)
@@ -695,10 +715,11 @@
   ([schema source options] (render-form schema source nil options))
   ([schema source errors options]
    (let [options (default-options options)
-         wrapped (-> (wrap-schema schema) (prep-schema options))]
+         wrapped (-> (wrap-schema schema) (prep-schema options))
+         transformer (mt/transformer xf-placeholders+defaults xf-anti-forgery)]
      (-> (collect-field-specs
            wrapped
-           ((encoder wrapped options xf-placeholders+defaults)
+           ((encoder wrapped options transformer)
             {base-data-key source})
            (map (fn [error]
                   (update error :in #(cons base-data-key %)))

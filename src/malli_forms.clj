@@ -158,56 +158,9 @@
     [:string {::type :submit
               :default "Submit"}]]])
 
-(def ^:private xf-anti-forgery
-  "Transformer that adds value for __anti-forgery-token. Should NOT be run when
-  parsing a user-provided value, as it may erroneously add a valid token."
-  (mt/transformer
-    {:name :anti-forgery}))
-     ;:encoders {::anti-forgery-token (when ring-anti-forgery
-     ;                                  (fn [_] (deref ring-anti-forgery)))}}))
-
 (def field-spec-schema
   "Schema for a field spec"
   (m/deref (m/schema ::field-spec {:registry registry})))
-
-;(def ^:private key-transformer
-;  "mt/key-transformer, equipped with a url-decoding step before keyword"
-;  ;; TODO: can do better than this. Will need to cover map-of as well
-;  (mt/key-transformer {:decode #(-> % util/url-decode keyword)}))
-
-(def ^:private key-transformer
-  "Like mt/key-transformer, but way, way better"
-  (let [coders {:map {:compile (fn [schema _]
-                                 (let [ks (map #(nth % 0) (m/children schema))
-                                       decoder (util/generous-decoder ks)]
-                                   (fn [value]
-                                     (into {}
-                                           (map (fn [[k v]] [(decoder k) v]))
-                                           value))))}
-                :enum {:compile (fn [schema _]
-                                  (let [decoder (util/generous-decoder (m/children schema))]
-                                    (fn [value]
-                                      (prn "Decoding value" value "for schema" schema)
-                                      (decoder value))))}}]
-    {:name :key-transformer
-     :encoders coders
-     :decoders coders}))
-
-(def ^:private default-options
-  "Decoder function that will apply default values to an ::options map"
-  (m/decoder (m/schema ::options {:registry registry})
-             (mt/transformer
-               mt/default-value-transformer
-               (mt/strip-extra-keys-transformer))))
-
-(def ^:private decode-options
-  "Decoder function that invokes a transformer stack suitable for parsing
-  options from form input; does not apply defaults"
-  (m/decoder (m/schema ::options {:registry registry})
-             (mt/transformer
-               key-transformer
-               (mt/string-transformer) ;; includes mt/json-transformer, basically
-               (mt/strip-extra-keys-transformer))))
 
 (def ^:private collection?
   "Is a type a collection type? That is, either ::collection or ::form"
@@ -530,6 +483,40 @@
                 ::m/walk-entry-vals true
                 ::m/walk-schema-refs true))))))
 
+;; ------ Transformers ------
+
+;(def ^:private key-transformer
+;  "mt/key-transformer, equipped with a url-decoding step before keyword"
+;  ;; TODO: can do better than this. Will need to cover map-of as well
+;  (mt/key-transformer {:decode #(-> % util/url-decode keyword)}))
+
+(def ^:private xf-anti-forgery
+  "Transformer that adds value for __anti-forgery-token. Should NOT be run when
+  parsing a user-provided value, as it may erroneously add a valid token."
+  (mt/transformer
+    {:name :anti-forgery}))
+     ;:encoders {::anti-forgery-token (when ring-anti-forgery
+     ;                                  (fn [_] (deref ring-anti-forgery)))}}))
+
+(def ^:private key-transformer
+  "Like mt/key-transformer, but way, way better"
+  (let [coders {:map {:compile (fn [schema _]
+                                 (let [ks (map #(nth % 0) (m/children schema))
+                                       decoder (util/generous-decoder ks)]
+                                   (fn [value]
+                                     (into {}
+                                           (map (fn [[k v]] [(decoder k) v]))
+                                           value))))}
+                :enum {:compile (fn [schema _]
+                                  (let [decoder (util/generous-decoder (m/children schema))]
+                                    (fn [value]
+                                      (prn "Decoding value" value "for schema" schema)
+                                      (decoder value))))}}]
+    {:name :key-transformer
+     :encoders coders
+     :decoders coders}))
+
+
 (def ensure-map-keys
   "Transformer that ensures that required and optional keys are present in maps
   by adding nil values when missing."
@@ -588,6 +575,12 @@
      :encoders coders
      :decoders coders}))
 
+(def ^:private xf-placeholders+defaults
+  "Transformer that applies placeholders and default values"
+  (mt/transformer
+    ensure-map-keys
+    auto-placeholder
+    mt/default-value-transformer))
                  
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholder
@@ -620,6 +613,51 @@
      :encoders coders
      :decoders coders}))
 
+(def pre-render-transformer
+  (mt/transformer xf-placeholders+defaults xf-anti-forgery))
+
+(defn- unnest-seq
+  "See unnest-seq-transformer"
+  [value]
+  (if (map? value) (vals value) value))
+
+(def unnest-seq-transformer
+  "Transformer that handles the way data in sequential forms (including sets)
+  will be returned by ring's nested-params middleware, namely:
+  ```
+  x[0][a]=1&x[0][b]=2
+  ;=>
+  {:x {:0 {:a \"1\", :b \"2\"}}}
+  ```
+  In a nutshell: when this transformer encounters a map where a flat collection
+  is expected, it returns the values of the map. Further coercion should be
+  performed by other transformers, like malli.transformer/collection-transformer"
+  (let [coders (into {}
+                     (for [stype (remove #{:map :map-of}
+                                         (::collection schema-type-by-input-type))]
+                       {stype unnest-seq}))]
+    {:name      :unnest-seq
+     :encoders  coders
+     :decoders  coders}))
+
+;; TODO: transformer that does what the silly middleware in malli-forms.reitit-test is doing by stripping out empty values
+(def parse-stack
+  "Transformer stack for parsing input data"
+  [
+   xf-placeholders+defaults
+   remove-placeholder-vals
+   unnest-seq-transformer
+   (mt/string-transformer) ;; includes mt/json-transformer, basically
+   key-transformer
+   xf-parse
+   (mt/strip-extra-keys-transformer)])
+
+(def ^:private parse-transformer
+  (apply mt/transformer parse-stack))
+
+
+;; ------ End transformers ------
+
 (def ^:private placeholder-fns
   "functions that add a placeholder value to a collection, by malli type.
   differs from auto-placeholder-fns in that these also update an existing
@@ -630,6 +668,22 @@
 (def ^:private may-placeholder
   "set of malli types of collections that support having a placeholder value added"
   (set (keys placeholder-fns)))
+
+(def ^:private default-options
+  "Decoder function that will apply default values to an ::options map"
+  (m/decoder (m/schema ::options {:registry registry})
+             (mt/transformer
+               mt/default-value-transformer
+               (mt/strip-extra-keys-transformer))))
+
+(def ^:private decode-options
+  "Decoder function that invokes a transformer stack suitable for parsing
+  options from form input; does not apply defaults"
+  (m/decoder (m/schema ::options {:registry registry})
+             (mt/transformer
+               key-transformer
+               (mt/string-transformer) ;; includes mt/json-transformer, basically
+               (mt/strip-extra-keys-transformer))))
 
 ;; ------ schema to AST based on real values ------
 
@@ -664,14 +718,6 @@
             (update index in (fnil conj []) (assoc error :message (me/error-message error))))
           {}
           errors))
-
-
-(def ^:private xf-placeholders+defaults
-  "Transformer that applies placeholders and default values"
-  (mt/transformer
-    ensure-map-keys
-    auto-placeholder
-    mt/default-value-transformer))
 
 (defn- add-path-info
   "Add name, id, and label to a spec, based on a path already added to it."
@@ -771,9 +817,6 @@
                {:name :render-specs
                 :encoders {:map {:leave #(some-> % render)}}}))))
 
-(def pre-render-transformer
-  (mt/transformer xf-placeholders+defaults xf-anti-forgery))
-
 (defn render-form
   "Renders a form based on a schema. Accepts various optional arguments:
     - source: initial data to seed form with. default: nil
@@ -826,30 +869,6 @@
 
 ;; ------ parsing ------
 
-(defn- unnest-seq
-  "See unnest-seq-transformer"
-  [value]
-  (if (map? value) (vals value) value))
-
-(def unnest-seq-transformer
-  "Transformer that handles the way data in sequential forms (including sets)
-  will be returned by ring's nested-params middleware, namely:
-  ```
-  x[0][a]=1&x[0][b]=2
-  ;=>
-  {:x {:0 {:a \"1\", :b \"2\"}}}
-  ```
-  In a nutshell: when this transformer encounters a map where a flat collection
-  is expected, it returns the values of the map. Further coercion should be
-  performed by other transformers, like malli.transformer/collection-transformer"
-  (let [coders (into {}
-                     (for [stype (remove #{:map :map-of}
-                                         (::collection schema-type-by-input-type))]
-                       {stype unnest-seq}))]
-    {:name      :unnest-seq
-     :encoders  coders
-     :decoders  coders}))
-
 (def ^:private decoder
   "Memoized m/decoder"
   (memoize m/decoder))
@@ -857,21 +876,6 @@
 (def ^:private explainer
   "Memoized m/explainer"
   (memoize m/explainer))
-
-;; TODO: transformer that does what the silly middleware in malli-forms.reitit-test is doing by stripping out empty values
-(def parse-stack
-  "Transformer stack for parsing input data"
-  [
-   xf-placeholders+defaults
-   remove-placeholder-vals
-   unnest-seq-transformer
-   (mt/string-transformer) ;; includes mt/json-transformer, basically
-   key-transformer
-   xf-parse
-   (mt/strip-extra-keys-transformer)])
-
-(def ^:private parse-transformer
-  (apply mt/transformer parse-stack))
 
 (defrecord ParseFailure
   [schema value errors  ;; these three from m/explain

@@ -2,7 +2,7 @@
   (:require
     [clojure.pprint :refer [pprint]]
     [malli-forms :as mf]
-    [malli-forms.test-schemas :refer [asn-pool-schema]]
+    [malli-forms.test-schemas :refer [asn-pool-schema activity]]
     ;[malli.core :as m]
     [muuntaja.core :as muuntaja]
     ;[reitit.coercion :as coercion]
@@ -43,7 +43,11 @@
                          [:span (handler req)]))]}]
       ["/sum"
        {:get {:handler (fn [_]
-                         (mf/render-form [:set number?]))}}]]]
+                         (mf/render-form [:set number?]))}}]]
+     ["/activities/new"
+      {:name    ::new-activity
+       ::mf/schema activity
+       :handler pprint-pre}]]
     {;:compile coercion/compile-request-coercers
      :coerce (fn [[path {::mf/keys [schema] :keys [handler] :as data}] opts]
                (println "Compiling route" [path data] "with options" opts)

@@ -67,6 +67,39 @@
                 (assoc m k newval))))]
     (up m ks f args)))
 
+(defn encoded-variants
+  "For a given candidate value, get a collection of expected strings that value
+  may be encoded as"
+  [v]
+  (cond
+    (string? v)   [v]
+    (keyword? v)  [(subs (str v) 1) (str v)]
+    :else         [(str v) (pr-str v)]))
+
+(defn generous-decoder
+  "Get a map of str-value->[candidate-1, ...] for a collection of candidates"
+  [candidates]
+  (reduce (fn [m [variant candidate]]
+            (-> m 
+                (update variant #(or % candidate))
+                (update (url-encode variant) #(or % candidate))))
+          ;; seed with exact string matches
+          (into {}
+                (comp (filter string?)
+                      (map #(vector % %)))
+                candidates)
+          (mapcat (fn [candidate]
+                    (map #(vector %1 %2) (encoded-variants candidate) (repeat candidate)))
+                  candidates)))
+
+(defn generous-decode
+  "Takes a (potentially URL-encoded) string and a collection of possible
+  options to decode to, such as keywords, strings, symbols, and numbers, and
+  returns the option the string decodes to, when possible"
+  [candidates ^String s]
+  ;; TODO: memoize
+  ((generous-decoder candidates) s))
+
 ;; ------ walking, with inspiration from https://gist.github.com/stuarthalloway/b6d1c8766c747fd81018
 
 (defprotocol PathWalkable
@@ -96,6 +129,12 @@
   (pathwalk* [form in out path]
     ;; note: dispatches to pathwalk* intentionally - don't want to call outer on result yet
     (into [] (pathwalk* (seq form) in out path)))
+
+  clojure.lang.MapEntry
+  (pathwalk* [form in out path]
+    (clojure.lang.MapEntry.
+      (key form)
+      (pathwalk in out (val form) (conj path (key form)))))
 
   java.util.Map
   (pathwalk* [form in out path]

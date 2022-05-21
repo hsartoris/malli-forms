@@ -53,3 +53,20 @@
              {"first" "10","last" "20"}}
    "submit" "Submit"})
 
+
+(def activity
+  "Schema for an activity in a TODO app"
+  [:map
+   [:name string?]
+   [:location {:optional true}
+    [:orn
+     [:coords [:tuple double? double?]]
+     [:anywhere [:= "anywhere"]]
+     [:named-location string?]]]
+   [:cost {:optional true}
+    [:orn
+     [:dollar-signs [:enum :$ :$$ :$$$ :$$$$ :$$$$$]]
+     [:unknown [:= "?"]]
+     [:free [:= "free"]]]]
+   [:type {:optional true} string?]
+   [:notes {:optional true} string?]])

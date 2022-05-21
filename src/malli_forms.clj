@@ -170,10 +170,28 @@
   "Schema for a field spec"
   (m/deref (m/schema ::field-spec {:registry registry})))
 
+;(def ^:private key-transformer
+;  "mt/key-transformer, equipped with a url-decoding step before keyword"
+;  ;; TODO: can do better than this. Will need to cover map-of as well
+;  (mt/key-transformer {:decode #(-> % util/url-decode keyword)}))
+
 (def ^:private key-transformer
-  "mt/key-transformer, equipped with a url-decoding step before keyword"
-  ;; TODO: can do better than this. Will need to cover map-of as well
-  (mt/key-transformer {:decode #(-> % util/url-decode keyword)}))
+  "Like mt/key-transformer, but way, way better"
+  (let [coders {:map {:compile (fn [schema _]
+                                 (let [ks (map #(nth % 0) (m/children schema))
+                                       decoder (util/generous-decoder ks)]
+                                   (fn [value]
+                                     (into {}
+                                           (map (fn [[k v]] [(decoder k) v]))
+                                           value))))}
+                :enum {:compile (fn [schema _]
+                                  (let [decoder (util/generous-decoder (m/children schema))]
+                                    (fn [value]
+                                      (prn "Decoding value" value "for schema" schema)
+                                      (decoder value))))}}]
+    {:name :key-transformer
+     :encoders coders
+     :decoders coders}))
 
 (def ^:private default-options
   "Decoder function that will apply default values to an ::options map"
@@ -417,6 +435,8 @@
 
 (defn add-field-specs
   "Walk schema structure, building field specs with entry and exit transforms.
+  Does not meaningfully transform schema except in wrapping the values of
+  optional keys in :maybe
 
   Control flow:
   - on enter:
@@ -510,22 +530,71 @@
                 ::m/walk-entry-vals true
                 ::m/walk-schema-refs true))))))
 
-(def ensure-required-keys
-  "Transformer that ensures that required keys are present in maps by adding
-  nil values when missing."
-  (let [coders {:map {:compile (fn [schema _]
-                                 (let [child-keys (map #(nth % 0) (m/children schema))]
-                                   ;; on enter, ensure placeholder values are present, as
-                                   ;; otherwise transform doesn't recurse to  them
-                                   (fn [value]
-                                     (if (or (nil? value) (map? value))
-                                       (reduce #(update %1 %2 identity) value child-keys)
-                                       value))))}}]
-    {:name :ensure-required-keys
+(def ensure-map-keys
+  "Transformer that ensures that required and optional keys are present in maps
+  by adding nil values when missing."
+  (let [coders {:map
+                {:compile
+                 (fn [schema _]
+                   (let [child-keys (map #(nth % 0) (m/children schema))]
+                     ;; on enter, ensure placeholder values are present, as
+                     ;; otherwise transform doesn't recurse to  them
+                     (fn [value]
+                       (if (or (nil? value) (map? value))
+                         (reduce #(update %1 %2 identity) value child-keys)
+                         value))))}}]
+    {:name :ensure-map-keys
      :encoders coders
      :decoders coders}))
 
-;; TODO: use some kind of identifiable value like ::placeholder for placeholders
+(def parseable
+  "Schema types that are subject to m/parse and m/unparse"
+  #{:orn :catn :altn :multi})
+
+(def ^:private xf-parse
+  (let [parse-compiler (fn [schema options]
+                         (let [parser (m/parser schema options)]
+                           {:leave
+                            (fn [value]
+                              (let [parsed (parser value)]
+                                (prn "Parsing value" value)
+                                (if (= parsed ::m/invalid)
+                                  ;; TODO: catch this value and add a selector
+                                  ;; TODO: maybe look for selector in options and wrap value with selected 
+                                  ::placeholder
+                                  parsed)))}))]
+    {:name :parse
+     :decoders (into {}
+                     (map #(vector % {:compile parse-compiler}))
+                     parseable)}))
+
+
+(def remove-placeholder-vals
+  "Transformer that removes keys with nil values from maps when those values are
+  optional."
+  (let [coders {:map
+                {:compile
+                 ;; TODO: configurable placeholder removal
+                 (fn [schema _]
+                   (let [optionals (keep #(let [[k props _schema] %]
+                                            (when (:optional props)
+                                              k))
+                                         (m/children schema))]
+                     (fn [value]
+                       (reduce (fn [m k]
+                                 (prn "Checking for" k "in" m)
+                                 (if (get m k) m (dissoc m k))) value optionals))))}}]
+    {:name :remove-placeholder-vals
+     :encoders coders
+     :decoders coders}))
+
+                 
+
+;; TODO: use some kind of identifiable value like ::placeholder for placeholder
+
+(def ^:private placeholder-values
+  {:set     ^::placeholder #{nil}
+   :map-of  ^::placeholder {nil nil}})
 
 (def ^:private auto-placeholder-fns
   "auto-placeholder functions by malli type. differs from placeholder-fns in
@@ -536,12 +605,17 @@
 
 (def auto-placeholder
   "Transformer that adds placeholder values by schema type"
-  (let [coders (into {}
-                     (map (fn [[mtype placeholder-fn]]
-                            [mtype {:compile (fn [_ options]
-                                               (when (::auto-placeholder options)
-                                                 placeholder-fn))}]))
-                     auto-placeholder-fns)]
+  (let [coders (update-vals auto-placeholder-fns
+                            (fn [placeholder-fn]
+                              {:compile (fn [_ options]
+                                          (when (::auto-placeholder options)
+                                            placeholder-fn))}))]
+       ; (into {}
+       ;              (map (fn [[mtype placeholder-fn]]
+       ;                     [mtype {:compile (fn [_ options]
+       ;                                        (when (::auto-placeholder options)
+       ;                                          placeholder-fn))}]))
+       ;              auto-placeholder-fns)]
     {:name :add-placeholders
      :encoders coders
      :decoders coders}))
@@ -595,7 +669,7 @@
 (def ^:private xf-placeholders+defaults
   "Transformer that applies placeholders and default values"
   (mt/transformer
-    ensure-required-keys
+    ensure-map-keys
     auto-placeholder
     mt/default-value-transformer))
 
@@ -629,19 +703,30 @@
      ;; TODO: ok, orn handling is gonna be hard
      (util/pathwalk
        (fn inner [item path]
+         (prn "Pre" item path)
          (let [subschema (path->schema path)
                mtype (m/type subschema)
                add-placeholder (when (= placeholder-target (path->name path))
                                  (or (-> subschema m/properties ::spec :placeholder-fn)
-                                     (placeholder-fns mtype)))]
-           (if add-placeholder
-             ;; TODO: actually, we really just want to call this encoder on the added item
-             ((encoder subschema options xf-placeholders+defaults)
-              (add-placeholder item))
-             item)))
+                                     (placeholder-fns mtype)))
+               item (if-not add-placeholder
+                      item
+                      ((encoder subschema options xf-placeholders+defaults)
+                       (add-placeholder item)))]
+           item))
+           ;    parse? (= mtype :orn) ;; TODO: others
+           ;    parsed (when parse?
+           ;             (m/parse subschema item options))]
+           ;(if (and parse? (not= parsed ::m/invalid))
+           ;  parsed
+           ;  item)))
        (fn outer [item path]
+         (prn "Post" item path)
          (let [errors (path->errors path)
-               spec (cond-> (path->spec path)
+               subschema (path->schema path)
+               _ (prn subschema)
+               spec (cond-> (some-> subschema m/properties ::spec)
+               ;spec (cond-> (path->spec path)
                       (some? errors) (assoc :errors errors)
                       :always (assoc :path path))
                mtype (::m/type spec)
@@ -649,6 +734,12 @@
                children (cond
                           (= :map mtype)      (keep item (:order spec))
                           (collection? stype) (filter some? item))
+               item (if (parseable mtype)
+                      (let [unparsed (m/unparse subschema item options)]
+                        (if-not (= unparsed ::m/invalid)
+                          unparsed
+                          item))
+                      item)
                children (cond-> (seq children)
                           (and add-placeholder-inputs (may-placeholder mtype))
                           ;; TODO: awkward
@@ -679,6 +770,9 @@
              (mt/transformer
                {:name :render-specs
                 :encoders {:map {:leave #(some-> % render)}}}))))
+
+(def pre-render-transformer
+  (mt/transformer xf-placeholders+defaults xf-anti-forgery))
 
 (defn render-form
   "Renders a form based on a schema. Accepts various optional arguments:
@@ -714,13 +808,16 @@
   ([schema source] (render-form schema source {}))
   ([schema source options] (render-form schema source nil options))
   ([schema source errors options]
+   (println "Rendering form for" schema)
    (let [options (default-options options)
-         wrapped (-> (wrap-schema schema) (prep-schema options))
-         transformer (mt/transformer xf-placeholders+defaults xf-anti-forgery)]
+         wrapped-schema (-> (wrap-schema schema) (prep-schema options))
+         encode (->> (mt/transformer xf-placeholders+defaults xf-anti-forgery)
+                     (encoder wrapped-schema options))]
+         ;; TODO: memoize 
+         ;parse (m/parser wrapped-schema options)]
      (-> (collect-field-specs
-           wrapped
-           ((encoder wrapped options transformer)
-            {base-data-key source})
+           wrapped-schema
+           (encode {base-data-key source})
            (map (fn [error]
                   (update error :in #(cons base-data-key %)))
                 errors)
@@ -764,10 +861,13 @@
 ;; TODO: transformer that does what the silly middleware in malli-forms.reitit-test is doing by stripping out empty values
 (def parse-stack
   "Transformer stack for parsing input data"
-  [key-transformer
+  [
    xf-placeholders+defaults
+   remove-placeholder-vals
    unnest-seq-transformer
    (mt/string-transformer) ;; includes mt/json-transformer, basically
+   key-transformer
+   xf-parse
    (mt/strip-extra-keys-transformer)])
 
 (def ^:private parse-transformer

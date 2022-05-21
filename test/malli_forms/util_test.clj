@@ -1,6 +1,6 @@
 (ns malli-forms.util-test
   (:require
-    [clojure.test :as test :refer [deftest is]]
+    [clojure.test :as test :refer [deftest is testing]]
     [malli-forms.util :as util]))
 
 (deftest munge-name-part-test
@@ -31,3 +31,16 @@
          (util/update-in* {:a [#{{:b [1]}}]} [:a 0 {:b [1]} :b 0] inc))
       "Unreasonably complex case"))
 
+(deftest generous-decode-test
+  (is (= :a
+         (util/generous-decode [:a :b :c :d] "a")
+         (util/generous-decode [:a :b :c :d] ":a"))
+      "Various ways of expressing the same thing")
+  (testing "Conflict cases"
+    (is (= "a"
+           (util/generous-decode [:a :b :c :d "a"] "a"))
+        "ambiguous case returns exact match")
+    (testing "ordering"
+      (is (= :a (util/generous-decode [:a :b :c :d 'a] "a"))))
+    (is (= :a (util/generous-decode [:a :b :c :d "a"] ":a"))
+        "less ambiguous cases")))

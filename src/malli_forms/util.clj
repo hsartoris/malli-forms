@@ -5,7 +5,8 @@
     [clojure.string :as str]
     [malli.core :as-alias m])
   (:import
-    (java.net URLEncoder URLDecoder)))
+    (java.net URLEncoder URLDecoder)
+    (java.util Base64)))
 
 (set! *warn-on-reflection* true)
 
@@ -243,3 +244,29 @@
     (some? value)       (assoc :value value)
     (some? attributes)  (conj attributes)
     (true? selected)    (assoc :selected true)))
+
+(def  b64->plantuml-map
+  (into {}
+        (map vector
+             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+             "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")))
+
+(defn b64->plantuml
+  "Converts a string or array of chars/bytes from base64 to plantuml base64"
+  [in]
+  (apply str
+         (into []
+               (map b64->plantuml-map)
+               (if (bytes? in)
+                 (map char in)
+                 in))))
+
+(def  b64-map
+  (into {}
+        (map-indexed vector)
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"))
+
+(defn base64
+  "Encode string into base64"
+  [^String string]
+  (.encodeToString (Base64/getEncoder) (.getBytes string)))

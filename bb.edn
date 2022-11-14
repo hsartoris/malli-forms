@@ -32,5 +32,7 @@
                              :task (clojure "-A:dev:test" "-M:outdated")}
          test:cognitect     {:doc "Run tests with cognitect test-runner"
                              :task (clojure "-A:dev:test" "-X:test/cognitect")}
+         test:eftest        {:doc "Run tests with eftest runner"
+                             :task (clojure "-A:dev:test" "-X:test/eftest")}
          test               {:doc "Forwards to default task runner"
-                             :task (run 'test:cognitect)}}}
+                             :task (run 'test:eftest)}}}

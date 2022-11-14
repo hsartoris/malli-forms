@@ -18,7 +18,8 @@
    [:preallocated {:default false}
     boolean?]
    [:type         {:optional true}
-    [:enum "multihomed" "stub" "transit" "ixp"]]
+    [:enum {::mf/labels ["Multihoming" "Stub network" "Internet transit" "Internet exchange point"]}
+     "multihomed" "stub" "transit" "ixp"]]
    ;; TODO: this is resulting in required tags - not good
    [:tags         {:optional true}
     [:set [:string {:max 32}]]]

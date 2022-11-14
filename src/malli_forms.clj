@@ -93,6 +93,12 @@
    [:multi {:dispatch :type}
     [::collection ::field-spec.collection]
     [::form       ::field-spec.form]
+    [:select      [:merge
+                   [:ref ::field-spec.input]
+                   [:map
+                    [:options [:sequential [:map
+                                            [:value any?]
+                                            [:label {:optional true} string?]]]]]]]
     [::m/default  ::field-spec.input]]
 
    ::options
@@ -368,8 +374,21 @@
   (boolean-radio-when-required spec))
 
 (defmethod complete-field-spec :enum
-  [_ spec children]
-  (assoc spec :options children))
+  [_ {:keys [labels] :as spec} children]
+  ;; children of an enum are literal values
+  ;; if vector of labels, treat as one-to-one with children
+  (when (sequential? labels)
+    (assert (= (count labels) (count children))
+            "Sequence of enum labels must match count of children"))
+  (assoc spec :options
+         (into []
+               (map (fn [[child-val label]]
+                      {:value child-val
+                       :label (or label (util/value->label child-val))}))
+               (if (vector? labels)
+                 (zipmap children labels)
+                 (for [child-val children]
+                   [child-val (get labels child-val)])))))
 
 ;;????????
 (comment
@@ -574,13 +593,6 @@
     {:name :remove-placeholder-vals
      :encoders coders
      :decoders coders}))
-
-(def ^:private xf-placeholders+defaults
-  "Transformer that applies placeholders and default values"
-  (mt/transformer
-    ensure-map-keys
-    auto-placeholder
-    mt/default-value-transformer))
                  
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholder
@@ -612,6 +624,13 @@
     {:name :add-placeholders
      :encoders coders
      :decoders coders}))
+
+(def ^:private xf-placeholders+defaults
+  "Transformer that applies placeholders and default values"
+  (mt/transformer
+    ensure-map-keys
+    auto-placeholder
+    mt/default-value-transformer))
 
 (def pre-render-transformer
   (mt/transformer xf-placeholders+defaults xf-anti-forgery))
@@ -748,6 +767,9 @@
          path->errors (index-errors errors)]
      ;; TODO: ok, orn handling is gonna be hard
      (util/pathwalk
+       ;; this is called on an item on the way down the tree
+       ;; its only function at the moment is to handle when placeholder values have
+       ;; been requested for a given target, before further descent into collection
        (fn inner [item path]
          (prn "Pre" item path)
          (let [subschema (path->schema path)
@@ -903,6 +925,7 @@
                                       :schema   schema
                                       :options  options}
                                      e))))]
+     (tap> [schema decoded options])
      (if-some [error (explain decoded)]
        (-> error
            (assoc :source data

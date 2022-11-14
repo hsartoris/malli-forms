@@ -87,3 +87,13 @@ opposed to a single-purpose form spec.
 ```bash
 clojure -A:test:dev -M:repl/rebel
 ```
+
+## Notes on types
+Malli types, that is
+
+### `:enum`
+* Transformed into a `select`
+* Supply labels for items by providing either a map or a vector under
+	`::mf/labels`. If a vector, assumed to be one-to-one match with child items.
+* Requires somewhat generous parsing to handle, for example, heterogenous
+	string & keyword values. Handled by `mf/key-transformer`

@@ -60,13 +60,13 @@
     [:select 
      (-> spec props->attrs (dissoc :label :options :value))
      (list
+       ;; TODO: move into parsing?
        (when-not (some #(= value %) options) ;; nothing selected
          [:option {:selected true :value "" :disabled true} "Select an option"])
        (for [option options
-             :let [label  (value->label option)
-                   sel?   (= option value)]]
+             :let [sel? (= (:value option) value)]]
          [:option 
-          (cond-> {:value option}
+          (cond-> option
             sel? (assoc :selected true))
           label]))]
     (error-span spec)))

@@ -90,7 +90,9 @@
     [:children [:sequential [:ref ::field-spec]]]]
 
    ::field-spec
-   [:multi {:dispatch :type}
+   [:multi {:dispatch :type
+            :encode/render-specs {:compile (fn [_schema {::keys [render]}]
+                                             {:leave #(some-> % render)})}}
     [::collection ::field-spec.collection]
     [::form       ::field-spec.form]
     [:select      [:merge
@@ -302,7 +304,6 @@
 
 (defmethod complete-field-spec :map
   [_ spec children]
-  ;; TODO: better ordering control
   (assoc spec :order (map #(nth % 0) children)))
 
 (defmethod complete-field-spec :or
@@ -315,7 +316,6 @@
 ;; TODO
 (defmethod complete-field-spec :orn
   [_ spec children]
-  ;(println spec children)
   (let [child-keys (map #(nth % 0) children)
         child-specs (schemas->specs (map #(nth % 2) children))]
     (if (apply = (map :type child-specs))
@@ -573,24 +573,6 @@
   "Schema types that are subject to m/parse and m/unparse"
   #{:orn :catn :altn :multi})
 
-(def ^:private xf-parse
-  (let [parse-compiler (fn [schema options]
-                         (let [parser (m/parser schema options)]
-                           {:leave
-                            (fn [value]
-                              (let [parsed (parser value)]
-                                (prn "Parsing value" value)
-                                (if (= parsed ::m/invalid)
-                                  ;; TODO: catch this value and add a selector
-                                  ;; TODO: maybe look for selector in options and wrap value with selected 
-                                  ::placeholder
-                                  parsed)))}))]
-    {:name :parse
-     :decoders (into {}
-                     (map #(vector % {:compile parse-compiler}))
-                     parseable)}))
-
-
 (def remove-placeholder-vals
   "Transformer that removes keys with nil values from maps when those values are
   optional."
@@ -612,10 +594,6 @@
                  
 
 ;; TODO: use some kind of identifiable value like ::placeholder for placeholder
-
-(def ^:private placeholder-values
-  {:set     ^::placeholder #{nil}
-   :map-of  ^::placeholder {nil nil}})
 
 (def ^:private auto-placeholder-fns
   "auto-placeholder functions by malli type. differs from placeholder-fns in
@@ -678,7 +656,8 @@
    unnest-seq-transformer
    (mt/string-transformer) ;; includes mt/json-transformer, basically
    key-transformer
-   xf-parse
+   ;; TODO
+   ;xf-parse
    (mt/strip-extra-keys-transformer)])
 
 (def ^:private parse-transformer
@@ -774,7 +753,6 @@
                                   placeholder-target
                                   selected-leaves] :as options}]
    (let [path->schema (memoize (schema-index schema))
-         path->spec (fn [path] (some-> (path->schema path) m/properties ::spec))
          path->errors (index-errors errors)]
      ;; TODO: ok, orn handling is gonna be hard
      (util/pathwalk
@@ -817,20 +795,16 @@
                ;; handle schemas with leaf nodes
                ;; TODO: other schemas with leaf nodes
                orn? (= :orn mtype)
+               parsed (when (parseable mtype)
+                        (let [parsed (m/parse subschema item options)]
+                          (when-not (= ::m/invalid parsed) parsed)))
                leaf (when orn?
                       (or ;; either use actual parsed value, if available
-                          (and (map-entry? item) (key item))
+                          (and (map-entry? parsed) (key parsed))
                           ;; or prior override value
                           (when-some [from-form (get selected-leaves pname)]
                             ;; TODO: bad bad bad
                             ((util/generous-decoder (:keys spec)) from-form))))
-               
-               item (if (parseable mtype)
-                      (let [unparsed (m/unparse subschema item options)]
-                        (if-not (= unparsed ::m/invalid)
-                          unparsed
-                          item))
-                      item)
                children (cond-> (seq children)
                           (and add-placeholder-inputs (may-placeholder mtype))
                           ;; TODO: awkward
@@ -856,7 +830,9 @@
                          ;; TODO: should almost certainly happen during inner
                          (when-some [child-spec (get (:child-specs spec) leaf)]
                            (-> child-spec
-                               (assoc :value item, :path path, :label nil)
+                               (assoc :path path, :label nil, :value item)
+                               (cond->
+                                 (map-entry? parsed) (assoc :value (val parsed)))
                                add-path-info))]}
 
 
@@ -873,11 +849,10 @@
   "Given a value as produced by collect-field-specs and options, renders fields
   defined by AST into markup"
   ([source] (render-specs source {}))
-  ([source {::keys [render] :as options}]
-   (m/encode field-spec-schema source options
-             (mt/transformer
-               {:name :render-specs
-                :encoders {:map {:leave #(some-> % render)}}}))))
+  ([source options]
+   ;; see encode/render-specs definition on ::field-spec schema above
+   (m/encode field-spec-schema source options (mt/transformer
+                                                {:name :render-specs}))))
 
 (defn render-form
   "Renders a form based on a schema. Accepts various optional arguments:

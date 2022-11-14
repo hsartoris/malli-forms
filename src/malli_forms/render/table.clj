@@ -26,8 +26,6 @@
   "Renderer used when no theme is specified"
   :type)
 
-(defmethod render nil [spec] spec)
-
 (defmethod render :default
   [spec]
   (labeled-input spec))
@@ -56,7 +54,6 @@
 
 (defmethod render :select
   [{:keys [options label #_:clj-kondo/ignore name value id] :as spec}]
-  (tap> spec)
   (list
     (when label
       [:label {:for id} label])

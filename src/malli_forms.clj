@@ -126,7 +126,14 @@
     [::ignore-form-options
      {:doc      "Should handle-submit skip merging options values from the form"
       :default  false}
-     boolean?]]
+     boolean?]
+    [::selected-leaves
+     {:doc      "Notes which leaves have been selected in such schemas as need them"
+      :optional true}
+     [:map-of 
+      ;; TODO: figure out why this is necessary
+      [:string {:decode/string util/url-decode}]
+      string?]]]
    ::form
    [:map {:doc "Expected shape of data returned from form"}
     [base-data-key {:doc "Where the provided schema will be placed"} :any]
@@ -195,7 +202,9 @@
                qualified-symbol?
                char?
                bytes?
-               :re]
+               :re
+               ;; TODO: unsure
+               :=]
     :checkbox [boolean?
                :boolean
                ;; TODO: false? is sort of nonsensical
@@ -307,12 +316,19 @@
 (defmethod complete-field-spec :orn
   [_ spec children]
   ;(println spec children)
-  (let [child-specs (schemas->specs (map #(nth % 2) children))]
+  (let [child-keys (map #(nth % 0) children)
+        child-specs (schemas->specs (map #(nth % 2) children))]
     (if (apply = (map :type child-specs))
       (-> (assoc spec ::m/type :or) ;; TODO: good idea?
           (into (util/intersect-maps child-specs)))
       ;; TODO
-      spec)))
+      ;; TODO: steal code from enum to apply labels to options
+      (assoc spec
+             :keys child-keys
+             :child-specs (zipmap child-keys
+                                  (map #(cond-> %
+                                          (= := (::m/type %)) (assoc :type :hidden))
+                                       child-specs))))))
       ;(assoc spec :child-fn
       ;       (into {}
       ;             (map (fn [child]
@@ -615,12 +631,6 @@
                               {:compile (fn [_ options]
                                           (when (::auto-placeholder options)
                                             placeholder-fn))}))]
-       ; (into {}
-       ;              (map (fn [[mtype placeholder-fn]]
-       ;                     [mtype {:compile (fn [_ options]
-       ;                                        (when (::auto-placeholder options)
-       ;                                          placeholder-fn))}]))
-       ;              auto-placeholder-fns)]
     {:name :add-placeholders
      :encoders coders
      :decoders coders}))
@@ -761,7 +771,8 @@
   ([schema source options]
    (collect-field-specs schema source nil options))
   ([schema source errors {::keys [add-placeholder-inputs
-                                  placeholder-target] :as options}]
+                                  placeholder-target
+                                  selected-leaves] :as options}]
    (let [path->schema (memoize (schema-index schema))
          path->spec (fn [path] (some-> (path->schema path) m/properties ::spec))
          path->errors (index-errors errors)]
@@ -802,6 +813,18 @@
                children (cond
                           (= :map mtype)      (keep item (:order spec))
                           (collection? stype) (filter some? item))
+               pname (path->name path)
+               ;; handle schemas with leaf nodes
+               ;; TODO: other schemas with leaf nodes
+               orn? (= :orn mtype)
+               leaf (when orn?
+                      (or ;; either use actual parsed value, if available
+                          (and (map-entry? item) (key item))
+                          ;; or prior override value
+                          (when-some [from-form (get selected-leaves pname)]
+                            ;; TODO: bad bad bad
+                            ((util/generous-decoder (:keys spec)) from-form))))
+               
                item (if (parseable mtype)
                       (let [unparsed (m/unparse subschema item options)]
                         (if-not (= unparsed ::m/invalid)
@@ -819,7 +842,24 @@
                                      :onclick "this.closest('form').noValidate=true;"
                                      :value   (path->name path)
                                      :label   "+"})))]
+           (when orn? (tap> spec))
            (cond
+             orn?
+             {:type ::collection
+              ::m/type :orn
+              :path path
+              :children [{:type :select
+                          :name (path->name [base-options-key ::selected-leaves pname])
+                          :value leaf
+                          :options (for [k (:keys spec)]
+                                     {:value k :label (util/value->label k)})}
+                         ;; TODO: should almost certainly happen during inner
+                         (when-some [child-spec (get (:child-specs spec) leaf)]
+                           (-> child-spec
+                               (assoc :value item, :path path, :label nil)
+                               add-path-info))]}
+
+
              (collection? stype) ;; also catches mtype :map
              (assoc spec :children children)
 
@@ -952,10 +992,12 @@
                    (conj (decode-options (get raw-data base-options-key))))
          data (get raw-data base-data-key)
          parsed (parse schema data options)]
-     (assoc parsed :form (delay (render-form schema
-                                             (:value parsed)
-                                             (:errors parsed)
-                                             options))))))
+     (assoc parsed
+            :options options
+            :form (delay (render-form schema
+                                      (:value parsed)
+                                      (:errors parsed)
+                                      options))))))
 
 ;; remaining:
 ;; - [ ] Field specs:

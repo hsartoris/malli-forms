@@ -97,3 +97,49 @@ Malli types, that is
 	`::mf/labels`. If a vector, assumed to be one-to-one match with child items.
 * Requires somewhat generous parsing to handle, for example, heterogenous
 	string & keyword values. Handled by `mf/key-transformer`
+
+Also, the following are basically equivalent:
+```clojure
+[:enum {::mf/labels ["A" "B" "C"]}
+ :a :b :c]
+[:orn
+ [:a {::mf/label "A"} [:= :a]]
+ [:b {::mf/label "B"} [:= :b]]
+ [:c {::mf/label "C"} [:= :c]]]
+```
+
+### `:orn`
+Because we need to render a field (or collection of fields) appropriate to the
+data structure being entered by the user, there are basically two situations
+to think about when handling an `orn`:
+1. All child data types are the same - we can just provide appropriate input
+	for the child data type, and let Malli sort out which category it is on the
+	backend. In practice, this is going to be rare, and probably not even worth
+	preparing for, unless it is easy. Currently, the code assumes it is easy and
+	does its best.
+2. Child data types are different - in this case, what we really need is to
+	regard it as comprising two schema components: an enum of possible leaves,
+	and a map from `leaf->schema`.
+	Some thoughts on this:
+	* Still don't want to make major changes to schema during preprocessing (such
+		as replacing `orn`s with `enum`s with special properties).
+	* Current implementation has values going through `m/parse`, which attempts
+		to pair the value of an	`orn` with its name.
+	* Ideally we can separate between there not being a value for which leaf
+		we are choosing vs. no value for the actual data.
+	* Can maintain a hidden map of `path->leaf` by appending field specs in
+		`collect-field-specs`, much as with placeholder targets.
+	* Not sure how to handle validation that the provided value is actually the
+		selected leaf type - maybe not even worth it?
+	* No, not worth it - use leaf type selector as hint for choosing appropriate
+		child to render; set it in hidden map every time from actual parse result.
+	* (more basic) if the selected leaf has an equality schema, don't render
+		anything - catch this at the `inner` stage of spec collection and directly
+		supply a `map-entry` of `[leaf literal-value]`. If possible, this should
+		happen during transformation, probably `xf-placeholders+defaults`, in order
+		to make sure input is valid as soon as possible. However it's probably not
+		possible due to the constant problem of path mismatches.
+	* We can treat this as a collection spec, with one or two children depending
+		on selection state.
+	* The issue with a leaf selector is that it needs to be decoded, in precisely
+		the same way enum values do. 

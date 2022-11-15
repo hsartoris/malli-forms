@@ -42,6 +42,10 @@
   "Key under which options for the handler will be stored in form"
   "mf-options")
 
+(def ^:private simple-conformer
+  "Transformer that applies default values and conforms collections"
+  (mt/transformer (mt/collection-transformer) mt/default-value-transformer))
+
 (def ^:private local-registry
   {::type         [:enum
                    :number :text :select
@@ -75,7 +79,10 @@
     [:label       {:optional true} ::label]
     [:id          ::id]
     [:type        {:optional true} ::type]
+    [:value       {:optional true} any?]
     [:attributes  {:optional true} ::attributes]
+    [:placeholder {:optional true} string?]
+    [:required    {:optional true} boolean?]
     [:render?     {:optional true} ::render?]]
 
    ::field-spec.collection
@@ -92,16 +99,35 @@
 
    ::field-spec
    [:multi {:dispatch :type
-            :encode/render-specs {:compile (fn [_schema {::keys [render]}]
-                                             {:leave #(some-> % render)})}}
+            :encode {::render-spec {:compile (fn [_schema {::keys [render]}]
+                                               {:leave #(some-> % render)})}}}
     [::collection ::field-spec.collection]
     [::form       ::field-spec.form]
-    [:select      [:merge
-                   [:ref ::field-spec.input]
-                   [:map
-                    [:options [:sequential [:map
-                                            [:value any?]
-                                            [:label {:optional true} string?]]]]]]]
+    [:select {:encode
+              {::finalize-spec
+               {:compile (fn [schema _]
+                           (let [conform (m/decoder schema simple-conformer)]
+                             {:leave (fn [spec]
+                                       (let [{:keys [value placeholder options] :as spec} (conform spec)
+                                             selected (first (keep (fn [[idx option]]
+                                                                     (when (= value (:value option))
+                                                                       idx))
+                                                                   (map-indexed vector options)))
+                                             opt1 {:label placeholder
+                                                   :value ""
+                                                   :disabled (:required spec)
+                                                   :selected (nil? selected)}]
+                                         (assoc spec :options (into [opt1]
+                                                                    (cond-> options
+                                                                      selected (update selected assoc :selected true))))))}))}}}
+     [:merge
+      [:ref ::field-spec.input]
+      [:map
+       ;; not optional here, as opposed to typical definition
+       [:placeholder [:string {:default "Select an option"}]]
+       [:options [:vector [:map
+                           [:value any?]
+                           [:label {:optional true} string?]]]]]]]
     [::m/default  ::field-spec.input]]
 
    ::options
@@ -867,9 +893,11 @@
   defined by AST into markup"
   ([source] (render-specs source {}))
   ([source options]
-   ;; see encode/render-specs definition on ::field-spec schema above
-   (m/encode field-spec-schema source options (mt/transformer
-                                                {:name :render-specs}))))
+   ;; see encode/render-spec definition on ::field-spec schema above
+   (m/encode field-spec-schema source options
+             (mt/transformer ;; these are done on leave, so order is finalize->render
+               {:name ::render-spec}
+               {:name ::finalize-spec}))))
 
 (defn render-form
   "Renders a form based on a schema. Accepts various optional arguments:

@@ -53,22 +53,14 @@
    (error-span spec)])
 
 (defmethod render :select
-  [{:keys [options label #_:clj-kondo/ignore name value id] :as spec}]
+  [{:keys [options label #_:clj-kondo/ignore name id] :as spec}]
   (list
     (when label
       [:label {:for id} label])
     [:select 
      (-> spec props->attrs (dissoc :label :options :value))
-     (list
-       ;; TODO: move into parsing?
-       (when-not (some #(= value %) options) ;; nothing selected
-         [:option {:selected true :value "" :disabled true} "Select an option"])
-       (for [option options
-             :let [sel? (= (:value option) value)]]
-         [:option 
-          (cond-> option
-            sel? (assoc :selected true))
-          label]))]
+     (for [option options]
+       [:option option (:label option)])]
     (error-span spec)))
 
 (defmethod render :submit

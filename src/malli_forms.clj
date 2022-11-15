@@ -26,6 +26,7 @@
    ::attributes
    ;; TODO: will/should this appear?
    ::render?
+   ::placeholder
    ::placeholder-fn])
 
 (comment
@@ -324,11 +325,10 @@
       ;; TODO
       ;; TODO: steal code from enum to apply labels to options
       (assoc spec
-             :keys child-keys
-             :child-specs (zipmap child-keys
-                                  (map #(cond-> %
-                                          (= := (::m/type %)) (assoc :type :hidden))
-                                       child-specs))))))
+             :key-decoder (util/generous-decoder child-keys)
+             :keys child-keys))))
+
+(defmethod complete-field-spec := [_ spec _] spec)
       ;(assoc spec :child-fn
       ;       (into {}
       ;             (map (fn [child]
@@ -452,7 +452,9 @@
      ;; - use-child marks parent as no render, child as render
      (letfn [(inner* [walker schema path {::keys [parent] :as options}]
                (let [;; TODO: elsewhere
-                     no-render-children #{:and :andn :or :orn}
+                     ;no-render-children #{:and :andn :or :orn}
+                     ;; orn children do render, but selectively
+                     no-render-children #{:and :andn :or}
                      child-idx (::use-child (m/properties schema))
                      stype (m/type schema)
                      naive-spec (extract-field-spec schema)
@@ -763,25 +765,37 @@
          (prn "Pre" item path)
          (let [subschema (path->schema path)
                mtype (m/type subschema)
+               spec (-> subschema m/properties ::spec)
                add-placeholder (when (= placeholder-target (path->name path))
-                                 (or (-> subschema m/properties ::spec :placeholder-fn)
+                                 (or (:placeholder-fn spec)
                                      (placeholder-fns mtype)))
                item (if-not add-placeholder
                       item
                       ((encoder subschema options xf-placeholders+defaults)
-                       (add-placeholder item)))]
-           item))
-           ;    parse? (= mtype :orn) ;; TODO: others
-           ;    parsed (when parse?
-           ;             (m/parse subschema item options))]
-           ;(if (and parse? (not= parsed ::m/invalid))
-           ;  parsed
-           ;  item)))
+                       (add-placeholder item)))
+               parse? (= mtype :orn) ;; TODO: others
+               ;; TODO: would be nice to sneakily switch to detected leaf
+               ;; TODO: ok, looks like changing an orn leaf is an event the
+               ;; whole form needs to re-render on (we don't necessarily
+               parsed (when parse?
+                        (when-let [leaf (some->> (path->name path)
+                                                 (get selected-leaves)
+                                                 ((:key-decoder spec)))]
+                          ;; just fake it in this case
+                          (clojure.lang.MapEntry. leaf item)))]
+                        ;(let [try1 (m/parse subschema item options)]
+                        ;  (if-not (= ::m/invalid try1)
+                        ;    try1
+                        ;    (when-let [leaf (some->> (path->name path)
+                        ;                             (get selected-leaves)
+                        ;                             ((:key-decoder spec)))]
+                        ;      ;; just fake it in this case
+                        ;      (clojure.lang.MapEntry. leaf item)))))]
+           (or parsed item)))
        (fn outer [item path]
          (prn "Post" item path)
          (let [errors (path->errors path)
                subschema (path->schema path)
-               _ (prn subschema)
                spec (cond-> (some-> subschema m/properties ::spec)
                ;spec (cond-> (path->spec path)
                       (some? errors) (assoc :errors errors)
@@ -795,16 +809,20 @@
                ;; handle schemas with leaf nodes
                ;; TODO: other schemas with leaf nodes
                orn? (= :orn mtype)
-               parsed (when (parseable mtype)
-                        (let [parsed (m/parse subschema item options)]
-                          (when-not (= ::m/invalid parsed) parsed)))
+               [leaf item] (if (map-entry? item)
+                             item
+                             [nil item])
+               ;parsed (when (parseable mtype)
+               ;         (let [parsed (m/parse subschema item options)]
+               ;           (when-not (= ::m/invalid parsed) parsed)))
                leaf (when orn?
                       (or ;; either use actual parsed value, if available
-                          (and (map-entry? parsed) (key parsed))
+                          leaf
+                          ;(and (map-entry? parsed) (key parsed))
                           ;; or prior override value
                           (when-some [from-form (get selected-leaves pname)]
                             ;; TODO: bad bad bad
-                            ((util/generous-decoder (:keys spec)) from-form))))
+                            ((:key-decoder spec) from-form))))
                children (cond-> (seq children)
                           (and add-placeholder-inputs (may-placeholder mtype))
                           ;; TODO: awkward
@@ -827,13 +845,12 @@
                           :value leaf
                           :options (for [k (:keys spec)]
                                      {:value k :label (util/value->label k)})}
-                         ;; TODO: should almost certainly happen during inner
-                         (when-some [child-spec (get (:child-specs spec) leaf)]
-                           (-> child-spec
-                               (assoc :path path, :label nil, :value item)
-                               (cond->
-                                 (map-entry? parsed) (assoc :value (val parsed)))
-                               add-path-info))]}
+                         ;; already transformed into a field spec
+                         (some-> item
+                                 (dissoc :name)
+                                 ;; override path & label
+                                 (assoc :path path, :label nil)
+                                 add-path-info)]}
 
 
              (collection? stype) ;; also catches mtype :map
@@ -888,7 +905,7 @@
   ([schema source] (render-form schema source {}))
   ([schema source options] (render-form schema source nil options))
   ([schema source errors options]
-   (println "Rendering form for" schema)
+   (println "Rendering form for" schema "with options" options)
    (let [options (default-options options)
          wrapped-schema (-> (wrap-schema schema) (prep-schema options))
          encode (->> (mt/transformer xf-placeholders+defaults xf-anti-forgery)

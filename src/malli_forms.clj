@@ -46,6 +46,10 @@
   "Transformer that applies default values and conforms collections"
   (mt/transformer (mt/collection-transformer) mt/default-value-transformer))
 
+(def parseable
+  "Schema types that are subject to m/parse and m/unparse"
+  #{:orn :catn :altn :multi})
+
 (def ^:private local-registry
   {::type         [:enum
                    :number :text :select
@@ -354,12 +358,11 @@
              :key-decoder (util/generous-decoder child-keys)
              :keys child-keys))))
 
-(defmethod complete-field-spec := [_ spec _] spec)
-      ;(assoc spec :child-fn
-      ;       (into {}
-      ;             (map (fn [child]
-      ;                    [(nth child 0) (schema->spec (nth child 2))]))
-      ;             children)))))
+(defmethod complete-field-spec :=
+  [_ spec [target-value]]
+  ;; TODO: good idea?
+  (assoc spec :value target-value))
+
 (defmethod complete-field-spec :andn [_ _ _])
 
 (defmethod complete-field-spec :maybe
@@ -597,10 +600,6 @@
      :encoders coders
      :decoders coders}))
 
-(def parseable
-  "Schema types that are subject to m/parse and m/unparse"
-  #{:orn :catn :altn :multi})
-
 (def remove-placeholder-vals
   "Transformer that removes keys with nil values from maps when those values are
   optional."
@@ -632,11 +631,15 @@
 
 (def auto-placeholder
   "Transformer that adds placeholder values by schema type"
-  (let [coders (update-vals auto-placeholder-fns
-                            (fn [placeholder-fn]
-                              {:compile (fn [_ options]
-                                          (when (::auto-placeholder options)
-                                            placeholder-fn))}))]
+  (let [coders (-> auto-placeholder-fns
+                   (update-vals (fn [placeholder-fn]
+                                  {:compile (fn [_ options]
+                                              (when (::auto-placeholder options)
+                                                placeholder-fn))}))
+                   (assoc := {:compile (fn [schema options]
+                                         (when (::auto-placeholder options)
+                                           (let [target-value (-> schema m/children first)]
+                                             #(or % target-value))))}))]
     {:name :add-placeholders
      :encoders coders
      :decoders coders}))
@@ -647,9 +650,6 @@
     ensure-map-keys
     auto-placeholder
     mt/default-value-transformer))
-
-(def pre-render-transformer
-  (mt/transformer xf-placeholders+defaults xf-anti-forgery))
 
 (defn- unnest-seq
   "See unnest-seq-transformer"
@@ -799,24 +799,16 @@
                       item
                       ((encoder subschema options xf-placeholders+defaults)
                        (add-placeholder item)))
-               parse? (= mtype :orn) ;; TODO: others
-               ;; TODO: would be nice to sneakily switch to detected leaf
-               ;; TODO: ok, looks like changing an orn leaf is an event the
-               ;; whole form needs to re-render on (we don't necessarily
+               parse? (parseable mtype)
                parsed (when parse?
-                        (when-let [leaf (some->> (path->name path)
-                                                 (get selected-leaves)
-                                                 ((:key-decoder spec)))]
-                          ;; just fake it in this case
-                          (clojure.lang.MapEntry. leaf item)))]
-                        ;(let [try1 (m/parse subschema item options)]
-                        ;  (if-not (= ::m/invalid try1)
-                        ;    try1
-                        ;    (when-let [leaf (some->> (path->name path)
-                        ;                             (get selected-leaves)
-                        ;                             ((:key-decoder spec)))]
-                        ;      ;; just fake it in this case
-                        ;      (clojure.lang.MapEntry. leaf item)))))]
+                        (if-let [leaf (some->> (path->name path)
+                                               (get selected-leaves)
+                                               ((:key-decoder spec)))]
+                          ;; this means the user has explicitly switched leaf type - reset item
+                          (clojure.lang.MapEntry. leaf nil)
+                          ;; otherwise, attempt to parse the leaf
+                          (let [parsed (m/parse subschema item options)]
+                            (when-not (= ::m/invalid parsed) parsed))))]
            (or parsed item)))
        (fn outer [item path]
          (prn "Post" item path)
@@ -834,21 +826,8 @@
                pname (path->name path)
                ;; handle schemas with leaf nodes
                ;; TODO: other schemas with leaf nodes
-               orn? (= :orn mtype)
-               [leaf item] (if (map-entry? item)
-                             item
-                             [nil item])
-               ;parsed (when (parseable mtype)
-               ;         (let [parsed (m/parse subschema item options)]
-               ;           (when-not (= ::m/invalid parsed) parsed)))
-               leaf (when orn?
-                      (or ;; either use actual parsed value, if available
-                          leaf
-                          ;(and (map-entry? parsed) (key parsed))
-                          ;; or prior override value
-                          (when-some [from-form (get selected-leaves pname)]
-                            ;; TODO: bad bad bad
-                            ((:key-decoder spec) from-form))))
+               parse? (parseable mtype)
+               [leaf item] (if (map-entry? item) item [nil item])
                children (cond-> (seq children)
                           (and add-placeholder-inputs (may-placeholder mtype))
                           ;; TODO: awkward
@@ -860,17 +839,18 @@
                                      :onclick "this.closest('form').noValidate=true;"
                                      :value   (path->name path)
                                      :label   "+"})))]
-           (when orn? (tap> spec))
            (cond
-             orn?
+             parse?
              {:type ::collection
-              ::m/type :orn
+              ::m/type mtype ;; TODO: does this actually generalize beyond orn?
               :path path
               :children [{:type :select
                           :name (path->name [base-options-key ::selected-leaves pname])
                           :value leaf
                           :options (for [k (:keys spec)]
-                                     {:value k :label (util/value->label k)})}
+                                     {:value k
+                                      :disabled (= k leaf)
+                                      :label (util/value->label k)})}
                          ;; already transformed into a field spec
                          (some-> item
                                  (dissoc :name)
@@ -883,7 +863,10 @@
              (assoc spec :children children)
 
              (:render? spec)
-             (-> spec (assoc :value item, :path path) add-path-info))))
+             (-> (assoc spec :path path)
+                 (cond->
+                   (some? item) (assoc :value item))
+                 add-path-info))))
        source))))
 
 ;; ------ rendering AST to markup ------

@@ -197,8 +197,8 @@
    ;; TODO: test
    ["__anti-forgery-token" {:optional true}
     [:string {::type :hidden
-              :encode/anti-forgery (when ring-anti-forgery
-                                     (fn [_] (deref ring-anti-forgery)))}]]
+              :encode {::anti-forgery (when ring-anti-forgery
+                                        (fn [_] (deref ring-anti-forgery)))}}]]
    [base-data-key schema]
    ["submit" {:optional true}
     [:string {::type :submit
@@ -551,18 +551,10 @@
 
 ;; ------ Transformers ------
 
-;(def ^:private key-transformer
-;  "mt/key-transformer, equipped with a url-decoding step before keyword"
-;  ;; TODO: can do better than this. Will need to cover map-of as well
-;  (mt/key-transformer {:decode #(-> % util/url-decode keyword)}))
-
 (def ^:private xf-anti-forgery
   "Transformer that adds value for __anti-forgery-token. Should NOT be run when
   parsing a user-provided value, as it may erroneously add a valid token."
-  (mt/transformer
-    {:name :anti-forgery}))
-     ;:encoders {::anti-forgery-token (when ring-anti-forgery
-     ;                                  (fn [_] (deref ring-anti-forgery)))}}))
+  (mt/transformer {:name ::anti-forgery}))
 
 (def ^:private key-transformer
   "Like mt/key-transformer, but way, way better"
@@ -575,9 +567,7 @@
                                            value))))}
                 :enum {:compile (fn [schema _]
                                   (let [decoder (util/generous-decoder (m/children schema))]
-                                    (fn [value]
-                                      (prn "Decoding value" value "for schema" schema)
-                                      (decoder value))))}}]
+                                    #(decoder %)))}}]
     {:name :key-transformer
      :encoders coders
      :decoders coders}))
@@ -600,7 +590,7 @@
      :encoders coders
      :decoders coders}))
 
-(def remove-placeholder-vals
+(def remove-optional-nils
   "Transformer that removes keys with nil values from maps when those values are
   optional."
   (let [coders {:map
@@ -613,9 +603,8 @@
                                          (m/children schema))]
                      (fn [value]
                        (reduce (fn [m k]
-                                 (prn "Checking for" k "in" m)
                                  (if (get m k) m (dissoc m k))) value optionals))))}}]
-    {:name :remove-placeholder-vals
+    {:name ::remove-optional-nils
      :encoders coders
      :decoders coders}))
                  
@@ -680,12 +669,10 @@
   "Transformer stack for parsing input data"
   [
    xf-placeholders+defaults
-   remove-placeholder-vals
+   remove-optional-nils
    unnest-seq-transformer
    (mt/string-transformer) ;; includes mt/json-transformer, basically
    key-transformer
-   ;; TODO
-   ;xf-parse
    (mt/strip-extra-keys-transformer)])
 
 (def ^:private parse-transformer
@@ -782,13 +769,11 @@
                                   selected-leaves] :as options}]
    (let [path->schema (memoize (schema-index schema))
          path->errors (index-errors errors)]
-     ;; TODO: ok, orn handling is gonna be hard
      (util/pathwalk
        ;; this is called on an item on the way down the tree
        ;; its only function at the moment is to handle when placeholder values have
        ;; been requested for a given target, before further descent into collection
        (fn inner [item path]
-         (prn "Pre" item path)
          (let [subschema (path->schema path)
                mtype (m/type subschema)
                spec (-> subschema m/properties ::spec)
@@ -811,7 +796,6 @@
                             (when-not (= ::m/invalid parsed) parsed))))]
            (or parsed item)))
        (fn outer [item path]
-         (prn "Post" item path)
          (let [errors (path->errors path)
                subschema (path->schema path)
                spec (cond-> (some-> subschema m/properties ::spec)
@@ -851,12 +835,9 @@
                                      {:value k
                                       :disabled (= k leaf)
                                       :label (util/value->label k)})}
-                         ;; already transformed into a field spec
-                         (some-> item
-                                 (dissoc :name)
-                                 ;; override path & label
-                                 (assoc :path path, :label nil)
-                                 add-path-info)]}
+                         ;; already transformed into a field spec, but with path containing leaf
+                         ;; replace path and regenerate name, don't label separately from parent
+                         (some-> (dissoc item :name) (assoc :path path, :label nil) add-path-info)]}
 
 
              (collection? stype) ;; also catches mtype :map
@@ -916,7 +897,6 @@
   ([schema source] (render-form schema source {}))
   ([schema source options] (render-form schema source nil options))
   ([schema source errors options]
-   (println "Rendering form for" schema "with options" options)
    (let [options (default-options options)
          wrapped-schema (-> (wrap-schema schema) (prep-schema options))
          encode (->> (mt/transformer xf-placeholders+defaults xf-anti-forgery)
@@ -968,7 +948,6 @@
                                       :schema   schema
                                       :options  options}
                                      e))))]
-     (tap> [schema decoded options])
      (if-some [error (explain decoded)]
        (-> error
            (assoc :source data

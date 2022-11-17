@@ -1,5 +1,6 @@
 # malli-forms
 Generate HTML forms using your [malli](https://github.com/metosin/malli) schemas.
+[![Clojars Project](https://clojars.org/org.clojars.hsartoris/malli-forms/latest-version.svg)](https://clojars.org/org.clojars.hsartoris/malli-forms)
 
 ## Goals
 ### Primary
@@ -69,10 +70,7 @@ rendered as attributes, but only *expected* keys. This is also true of
 fields. Outside of making it difficult to integrate forms with tools
 like [Unpoly](https://github.com/unpoly/unpoly), the list of expected
 attributes
-[doesn't include `required`](https://github.com/jkk/formative/issues/63)[^1].
-
-[^1]: This is also not an example of an attitude towards maintaining a
-      library that inspires overwhelming confidence.
+[doesn't include `required`](https://github.com/jkk/formative/issues/63).
 
 ##### Doesn't always play nicely with common Ring parsing
 Mostly to do with checkbox handling.

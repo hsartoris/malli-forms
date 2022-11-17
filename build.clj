@@ -1,25 +1,35 @@
 (ns build
-  (:require [clojure.tools.build.api :as b]))
+  "Usage:
+  clojure -T:build org.corfield.build/clean
+  clojure -T:build org.corfield.build/jar
+  clojure -T:build deploy
+  etc
+  "
+  (:require
+    [clojure.tools.build.api :as b]
+    [org.corfield.build :as bb]))
 
+#_:clj-kondo/ignore
 (def lib 'org.clojars.hsartoris/malli-forms)
+
+#_:clj-kondo/ignore
 (def major 0)
+
+#_:clj-kondo/ignore
 (def minor 0)
+
+#_:clj-kondo/ignore
 (def patch (b/git-count-revs nil))
-(def version (format "%s.%s.%s") major minor patch)
-(def class-dir "target/classes")
-(def basis (b/create-basis {:project "deps.edn"}))
-(def jar-file (format "target/%s-%s.jar" (name lib) version))
 
-(defn clean [_]
-  (b/delete {:path "target"}))
+#_:clj-kondo/ignore
+(def version (format "%s.%s.%s" major minor patch))
 
-(defn jar [_]
-  (b/write-pom  {:class-dir class-dir
-                 :lib       lib
-                 :version   version
-                 :basis     basis
-                 :src-dirs  ["src"]})
-  (b/copy-dir   {:src-dirs  ["src" "resources"]
-                 :target-dir class-dir})
-  (b/jar        {:class-dir class-dir
-                 :jar-file jar-file}))
+(defn jar
+  "Wraps org.corfield.build/jar, providing lib and version"
+  [opts]
+  (bb/jar (assoc opts :lib lib, :version version)))
+
+(defn deploy
+  "Deploy JAR to clojars. Requires having CLOJARS_USERNAME and CLOJARS_PASSWORD set in env."
+  [opts]
+  (bb/deploy (assoc opts :lib lib, :version version)))

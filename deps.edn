@@ -29,13 +29,10 @@
                                :exec-args {:patterns [".*-test$" "malli-forms\\.test\\..*"]}}
            :test/eftest       {:extra-deps {eftest/eftest {:mvn/version "0.6.0"}}
                                :exec-fn eftest-runner/run-tests}
-           :build             {:extra-paths ["env/build"]
-                               :deps {io.github.clojure/tools.build {:git/tag "v0.8.1"
-                                                                     :git/sha "7d40500"}}
+           :build             {:deps {io.github.seancorfield/build-clj {:git/tag "v0.8.3"
+                                                                        :git/sha "7ac1f8d"}}
                                :ns-default build}
-
-           :deploy            {:extra-deps  {slipset/deps-deploy {:mvn/version "RELEASE"}}
-                               :exec-fn     deps-deploy.deps-deploy/deploy
-                               :exec-args   {:installer :remote
-                                             :artifact "target/malli-forms.jar"}}}}
-
+           :build/deploy      {:deps {io.github.seancorfield/build-clj {:git/tag "v0.8.3"
+                                                                        :git/sha "7ac1f8d"}}
+                               :ns-default build
+                               :exec-fn deploy}}}

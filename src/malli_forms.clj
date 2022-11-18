@@ -40,9 +40,9 @@
   "Key under which actual schema data will be placed in form"
   "data")
 
-(def ^:private base-options-key
-  "Key under which options for the handler will be stored in form"
-  "mf-options")
+(def ^:private base-flags-key
+  "Key under which flags for the handler will be stored in form"
+  "mf-flags")
 
 (def ^:private simple-conformer
   "Transformer that applies default values and conforms collections"
@@ -142,10 +142,6 @@
 
    ::options
    [:map {:doc "Options available for various functions in this library"}
-    [::placeholder-target
-     {:doc      "When set, should match name of an input that can have a placeholder value added"
-      :optional true}
-     string?]
     [::auto-placeholder
      {:doc      "When true, all schema items that are able will have placeholder values added"
       :default  true}
@@ -165,21 +161,29 @@
     [::ignore-form-options
      {:doc      "Should handle-submit skip merging options values from the form"
       :default  false}
-     boolean?]
+     boolean?]]
+
+   ::form-flags
+   [:map {:doc "Flags that can be sent during form submission, changing the behavior of parsing"}
+    [::placeholder-target
+     {:doc      "When set, should match name of an input that can have a placeholder value added"
+      :optional true}
+     string?]
     [::selected-leaves
      {:doc      "Notes which leaves have been selected in such schemas as need them"
       :optional true}
      [:map-of 
+      string?
       ;; TODO: figure out why this is necessary
-      [:string {:decode/string util/url-decode}]
+      ;[:string {:decode/string util/url-decode}]
       string?]]]
    ::form
    [:map {:doc "Expected shape of data returned from form"}
     [base-data-key {:doc "Where the provided schema will be placed"} :any]
-    [base-options-key
-     {:doc "Map of options to forms handler"
+    [base-flags-key
+     {:doc "Map of flags embedded in form to control handler"
       :optional true}
-     [:ref ::options]]]})
+     [:ref ::form-flags]]]})
 
 (def registry
   "malli registry for this project"
@@ -572,7 +576,8 @@
                                            value))))}
                 :enum {:compile (fn [schema _]
                                   (let [decoder (util/generous-decoder (m/children schema))]
-                                    #(decoder %)))}}]
+                                    #(decoder %)))}
+                :map-of #(update-keys % util/url-decode)}]
     {:name :key-transformer
      :encoders coders
      :decoders coders}))
@@ -704,10 +709,10 @@
                mt/default-value-transformer
                (mt/strip-extra-keys-transformer))))
 
-(def ^:private decode-options
+(def ^:private decode-flags
   "Decoder function that invokes a transformer stack suitable for parsing
-  options from form input; does not apply defaults"
-  (m/decoder (m/schema ::options {:registry registry})
+  flags from form input; does not apply defaults"
+  (m/decoder (m/schema ::form-flags {:registry registry})
              (mt/transformer
                key-transformer
                (mt/string-transformer) ;; includes mt/json-transformer, basically
@@ -823,7 +828,7 @@
                           (some-> vec
                                   (conj
                                     {:type    :submit
-                                     :name    (path->name [base-options-key
+                                     :name    (path->name [base-flags-key
                                                            ::placeholder-target])
                                      :onclick "this.closest('form').noValidate=true;"
                                      :value   (path->name path)
@@ -834,7 +839,7 @@
               ::m/type mtype ;; TODO: does this actually generalize beyond orn?
               :path path
               :children [{:type :select
-                          :name (path->name [base-options-key ::selected-leaves pname])
+                          :name (path->name [base-flags-key ::selected-leaves pname])
                           :value leaf
                           :options (for [k (:keys spec)]
                                      {:value k
@@ -976,7 +981,7 @@
          ;; TODO: handle potential failure to decode options
          options (cond-> options
                    (not (::ignore-form-options options))
-                   (conj (decode-options (get raw-data base-options-key))))
+                   (conj (decode-flags (get raw-data base-flags-key))))
          data (get raw-data base-data-key)
          parsed (parse schema data options)]
      (assoc parsed

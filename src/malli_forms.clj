@@ -24,6 +24,8 @@
    ::id
    ::type
    ::attributes
+   ::prefix
+   ::suffix
    ;; TODO: will/should this appear?
    ::render?
    ::placeholder
@@ -63,6 +65,8 @@
    ::name         string?
    ::label        string?
    ::id           string?
+   ::prefix       [string? {:doc "Value a given input field should be prefixed with when rendered"}]
+   ::suffix       [string? {:doc "Value a given input field should be suffixed with when rendered"}]
    ;; TODO
    ::attributes   [:map-of :keyword :any]
    ::render?      [boolean?
@@ -86,6 +90,8 @@
     [:value       {:optional true} any?]
     [:attributes  {:optional true} ::attributes]
     [:placeholder {:optional true} string?]
+    [:prefix      {:optional true} ::prefix]
+    [:suffix      {:optional true} ::suffix]
     [:required    {:optional true} boolean?]
     [:render?     {:optional true} ::render?]]
 
@@ -283,8 +289,7 @@
 (defn- extract-field-spec
   "Produce a (partial) field spec from a schema by pulling keys with the
   appropriate namespace out of its properties & unqualifying them, and
-  attempting to add the schema type based on [[schema-type->input-type]].
-  Defaults to required=true"
+  attempting to add the schema type based on [[schema-type->input-type]]."
   {:malli/schema [:=> [:cat ::m/schema] ::field-spec]}
   [schema]
   (let [mtype (m/type schema)
@@ -352,7 +357,6 @@
     (if (apply = (map :type child-specs))
       (-> (assoc spec ::m/type :or) ;; TODO: good idea?
           (into (util/intersect-maps child-specs)))
-      ;; TODO
       ;; TODO: steal code from enum to apply labels to options
       (assoc spec
              :key-decoder (util/generous-decoder child-keys)
@@ -363,6 +367,7 @@
   ;; TODO: good idea?
   (assoc spec :value target-value))
 
+;; TODO: not sure if this should share semantics with orn
 (defmethod complete-field-spec :andn [_ _ _])
 
 (defmethod complete-field-spec :maybe
@@ -399,8 +404,9 @@
   (assoc spec :type :text, :pattern "^$"))
 
 (defmethod complete-field-spec :fn
-  [_ _ _]
-  {:no-spec true})
+  [_ spec _]
+  ;; leave room for the possibility that user supplies a spec on a fn schema
+  (if (seq spec) spec {:no-spec true}))
 
 (defn- boolean-radio-when-required
   "Mark a boolean field as type radio buttons when required"
@@ -528,11 +534,10 @@
                  :else
                  ;; otherwise...
                  (let [naive-spec (::naive-spec options)
-                       finalize (:finalize naive-spec identity)
                        spec (complete-field-spec schema naive-spec children)]
                    ;; TODO: remove children marked no-spec and send back to inner if any
                    (-> schema
-                       (mu/update-properties assoc ::spec (finalize spec))
+                       (mu/update-properties assoc ::spec spec)
                        (m/-set-children children)))))]
        (m/-inner
          (reify m/Walker

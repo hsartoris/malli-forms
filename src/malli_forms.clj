@@ -169,6 +169,10 @@
      {:doc      "When set, should match name of an input that can have a placeholder value added"
       :optional true}
      string?]
+    [::removal-target
+     {:doc      "When set, should match name of an input that should be removed from its parent collection"
+      :optional true}
+     string?]
     [::selected-leaves
      {:doc      "Notes which leaves have been selected in such schemas as need them"
       :optional true}
@@ -177,6 +181,9 @@
       ;; TODO: figure out why this is necessary
       ;[:string {:decode/string util/url-decode}]
       string?]]]
+
+   ::options+flags [:merge [:ref ::options] [:ref ::form-flags]]
+
    ::form
    [:map {:doc "Expected shape of data returned from form"}
     [base-data-key {:doc "Where the provided schema will be placed"} :any]
@@ -202,6 +209,7 @@
 (defn- wrap-schema
   "Wrap provided schema into a map that matches ::form schema"
   [schema]
+  ;; TODO: copy any form parameters from schema
   [:map {::type   ::form
          ::method "POST"}
    ;; TODO: test
@@ -274,6 +282,8 @@
     :select   [:enum]
     ;; fake input type that includes schema types that may have (many) children
     ;; intentionally does not include predicate schemas, as they cannot have children
+    ;; TODO: replace this with fieldset, probably
+    ;; though it would be nice to take advantage of derivation for multimethods - ::fieldset ?
     ::collection [:map :map-of
                   :sequential :vector :set
                   :tuple ;; TODO
@@ -704,7 +714,7 @@
 
 (def ^:private default-options
   "Decoder function that will apply default values to an ::options map"
-  (m/decoder (m/schema ::options {:registry registry})
+  (m/decoder (m/schema ::options+flags {:registry registry})
              (mt/transformer
                mt/default-value-transformer
                (mt/strip-extra-keys-transformer))))
@@ -775,7 +785,7 @@
   ([schema source options]
    (collect-field-specs schema source nil options))
   ([schema source errors {::keys [add-placeholder-inputs
-                                  placeholder-target
+                                  placeholder-target removal-target
                                   selected-leaves] :as options}]
    (let [path->schema (memoize (schema-index schema))
          path->errors (index-errors errors)]
@@ -823,17 +833,31 @@
                parse? (parseable mtype)
                [leaf item] (if (map-entry? item) item [nil item])
                children (cond-> (seq children)
+                          (may-placeholder mtype)
+                          (->> (mapcat (fn [child-spec]
+                                         [child-spec
+                                          {:type :button
+                                           :name (path->name [base-flags-key ::removal-target])
+                                           :onclick "this.closest('form').noValidate=true;"
+                                           ;; TODO: strongly suggests need at least name/id on everything
+                                           :value (path->name (:path child-spec))
+                                           :label "-"}])))
                           (and add-placeholder-inputs (may-placeholder mtype))
                           ;; TODO: awkward
                           (some-> vec
                                   (conj
-                                    {:type    :submit
+                                    ;; maybe use a custom internal type here
+                                    {:type    :button
                                      :name    (path->name [base-flags-key
                                                            ::placeholder-target])
                                      :onclick "this.closest('form').noValidate=true;"
                                      :value   (path->name path)
+                                     ;; TODO: customizable
                                      :label   "+"})))]
+           ;; TODO: move branch-specific logic above into this cond
            (cond
+             (some-> removal-target (= pname)) nil
+
              parse?
              {:type ::collection
               ::m/type mtype ;; TODO: does this actually generalize beyond orn?

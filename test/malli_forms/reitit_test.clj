@@ -61,7 +61,11 @@
       {:middleware [(fn [handler]
                       (fn [req]
                         (-> (handler req)
-                            (update :body #(rum/render-static-markup [:html [:body [:main %]]])))))]}
+                            (update :body #(rum/render-static-markup [:html 
+                                                                      [:head
+                                                                       [:link {:rel "icon" :type "image/png"
+                                                                               :href "data:image/png;base64,iVBORw0KGgo="}]]
+                                                                      [:body [:main %]]])))))]}
       some-routes]
      ["/bootstrap"
       {::mf/render bs/render
@@ -71,6 +75,8 @@
                             (update :body #(rum/render-static-markup
                                              [:html
                                               [:head
+                                               [:link {:rel "icon" :type "image/png"
+                                                       :href "data:image/png;base64,iVBORw0KGgo="}]
                                                [:link {:href "https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"
                                                        :rel "stylesheet"}]
                                                ]

@@ -53,7 +53,7 @@
    (error-span spec)])
 
 (defmethod render :select
-  [{:keys [options label #_:clj-kondo/ignore name id] :as spec}]
+  [{:keys [options label id] :as spec}]
   (list
     (when label
       [:label {:for id} label])
@@ -63,9 +63,11 @@
        [:option option (:label option)])]
     (error-span spec)))
 
-(defmethod render :submit
-  [spec]
+(defn- render-button [spec]
   [:button (props->attrs spec) (or (util/label spec) (:value spec))])
+
+(defmethod render :submit [spec] (render-button spec))
+(defmethod render :button [spec] (render-button spec))
 
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]

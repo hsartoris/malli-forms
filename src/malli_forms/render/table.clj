@@ -69,6 +69,17 @@
 (defmethod render :submit [spec] (render-button spec))
 (defmethod render :button [spec] (render-button spec))
 
+(defmethod render ::mf/group
+  [{:keys [children id] :as spec}]
+  [:fieldset
+   (props->attrs spec)
+   ;; this doesn't work
+   [:style (str \# (util/url-encode id) " > * { display: inline; }")]
+   (when-some [l (util/label spec)] [:legend l])
+   (seq children)
+   (error-span spec)])
+    
+
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]
   [:fieldset

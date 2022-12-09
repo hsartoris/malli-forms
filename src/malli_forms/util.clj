@@ -215,11 +215,11 @@
   "When appropriate, get a best-guess label for a spec. Assumes :name is set
   correctly."
   [spec]
-  (or (:label spec)
-      
-      ;; TODO: never used at the moment
-      (some-> spec ::m/name value->label)
-      (path->label (:path spec))))
+  (if (contains? spec :label)
+    (:label spec)
+    (or ;; TODO: never used at the moment
+        (some-> spec ::m/name value->label)
+        (path->label (:path spec)))))
 
 ;; TODO: doesn't seem like this belongs here
 ;; TODO: review for consistency
@@ -234,6 +234,7 @@
    :order
    :options
    :finalize
+   :errors
    :malli.core/type])
 
 (defn props->attrs

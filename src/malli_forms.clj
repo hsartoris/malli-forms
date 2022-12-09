@@ -95,6 +95,12 @@
     [:required    {:optional true} boolean?]
     [:render?     {:optional true} ::render?]]
 
+   ::field-spec.group
+   [:map {:doc "Field spec for a group of closely-related specs.
+               May be rendered differently from a collection."}
+    [:path ::path]
+    [:children [:sequential [:ref ::field-spec]]]]
+
    ::field-spec.collection
    [:map {:doc "Field spec for a parent of multiple other field specs"}
     [:path ::path]
@@ -111,6 +117,7 @@
    [:multi {:dispatch :type
             :encode {::render-spec {:compile (fn [_schema {::keys [render]}]
                                                {:leave #(some-> % render)})}}}
+    [::group      ::field-spec.group]
     [::collection ::field-spec.collection]
     [::form       ::field-spec.form]
     [:select {:encode
@@ -192,6 +199,8 @@
       :optional true}
      [:ref ::form-flags]]]})
 
+(derive ::group ::collection) ;; default handling for groups
+
 (def registry
   "malli registry for this project"
   (mr/composite-registry
@@ -228,12 +237,12 @@
 
 (def ^:private collection?
   "Is a type a collection type? That is, either ::collection or ::form"
-  #{::form ::collection})
+  #{::form ::collection ::group})
 
 (def ^:private no-label-children
   "Malli types whose children should not be labeled"
   ;; TODO: exhaustive?
-  #{:sequential :vector :set})
+  #{:sequential :vector :set :tuple})
 
 ;; ------ building specs from a schema ------
 
@@ -286,11 +295,11 @@
     ;; though it would be nice to take advantage of derivation for multimethods - ::fieldset ?
     ::collection [:map :map-of
                   :sequential :vector :set
-                  :tuple ;; TODO
                   ;; really big TODO
                   :+ :*
                   :repeat
-                  :cat :catn]})
+                  :cat :catn]
+    ::group     [:tuple]})
 
 (def schema-type->input-type
   "Simple mapping from schema type to HTML form input type"
@@ -648,7 +657,11 @@
                    (assoc := {:compile (fn [schema options]
                                          (when (::auto-placeholder options)
                                            (let [target-value (-> schema m/children first)]
-                                             #(or % target-value))))}))]
+                                             #(or % target-value))))}
+                          :tuple {:compile (fn [schema options]
+                                             (when (::auto-placeholder options)
+                                               (let [placeholder (into [] (repeat (count (m/children schema)) nil))]
+                                                 #(or % placeholder))))}))]
     {:name :add-placeholders
      :encoders coders
      :decoders coders}))
@@ -762,17 +775,19 @@
           {}
           errors))
 
+
+;; TODO: evaluate possibility that having path on field-spec is actually unecessary
 (defn- add-path-info
-  "Add name, id, and label to a spec, based on a path already added to it."
-  [spec]
-  (let [path (:path spec)
-        input-name (or (:name spec) (path->name path))
-        spec (assoc spec :name input-name)]
-    (-> spec
-        (default :id    (str "mf-" input-name))
+  "Add name, id, and label to a spec based on provided path.
+  name and id will be the same."
+  [spec path]
+  (when (= path ["data" :location])
+    (println "Adding path info to" spec path))
+  (let [input-name (path->name path)]
+    (-> (assoc spec :name input-name, :id input-name, :path path)
         (cond->
           (not (no-label-children (:parent spec)))
-          (default :label (util/label spec))))))
+          (default :label (util/path->label path))))))
 
 (defn collect-field-specs
   "Given a schema, a value, optional errors, and options, encode the value
@@ -802,86 +817,110 @@
                                      (placeholder-fns mtype)))
                item (if-not add-placeholder
                       item
+                      ;; here, we transform with xf-placeholders+defaults for
+                      ;; the benefit of the newly-added item within the collection
+                      ;; currently being considered. it would be preferable for
+                      ;; the transform to only take place on the newly added
+                      ;; item, but this requires knowing the appropriate schema
+                      ;; and is actually impossible in the case of maps - must
+                      ;; operate on key, and not just value
                       ((encoder subschema options xf-placeholders+defaults)
                        (add-placeholder item)))
-               parse? (parseable mtype)
-               parsed (when parse?
+               parsed (when (parseable mtype)
                         (if-let [leaf (some->> (path->name path)
                                                (get selected-leaves)
                                                ((:key-decoder spec)))]
                           ;; this means the user has explicitly switched leaf type - reset item
-                          (clojure.lang.MapEntry. leaf nil)
+                          ;; also attempt to provide a placeholder value
+                          (->> (m/encode (mu/get subschema leaf) nil options xf-placeholders+defaults)
+                               (clojure.lang.MapEntry. leaf))
                           ;; otherwise, attempt to parse the leaf
                           (let [parsed (m/parse subschema item options)]
                             (when-not (= ::m/invalid parsed) parsed))))]
+           (when (= :tuple mtype)
+             (println "tuple:" spec item parsed))
+           ;; even if this is a parseable node, we may end up with the original
+           ;; item if parsing fails
            (or parsed item)))
        (fn outer [item path]
          (let [errors (path->errors path)
                subschema (path->schema path)
                spec (cond-> (some-> subschema m/properties ::spec)
-               ;spec (cond-> (path->spec path)
                       (some? errors) (assoc :errors errors)
                       :always (assoc :path path))
                mtype (::m/type spec)
                stype (:type spec)
-               children (cond
-                          (= :map mtype)      (keep item (:order spec))
-                          (collection? stype) (filter some? item))
-               pname (path->name path)
-               ;; handle schemas with leaf nodes
-               ;; TODO: other schemas with leaf nodes
-               parse? (parseable mtype)
-               [leaf item] (if (map-entry? item) item [nil item])
-               children (cond-> (seq children)
-                          (may-placeholder mtype)
-                          (->> (mapcat (fn [child-spec]
-                                         [child-spec
-                                          {:type :button
-                                           :name (path->name [base-flags-key ::removal-target])
-                                           :onclick "this.closest('form').noValidate=true;"
-                                           ;; TODO: strongly suggests need at least name/id on everything
-                                           :value (path->name (:path child-spec))
-                                           :label "-"}])))
-                          (and add-placeholder-inputs (may-placeholder mtype))
-                          ;; TODO: awkward
-                          (some-> vec
+               pname (path->name path)]
+           (cond
+             ;; this path has been flagged for removal
+             (some-> removal-target (= pname)) nil
+
+             ;; schema may have branch nodes, represented as map-entry with
+             ;; name of branch as key and item as value
+             ;; TODO: validate with schemas with leaf nodes other than orn
+             (parseable mtype)
+             (let [[branch item] (if (map-entry? item) item [nil item])]
+               (add-path-info
+                 {:type ::collection
+                  ::m/type mtype ;; TODO: does this actually generalize beyond orn?
+                  :children [{:type :select
+                              :name (path->name [base-flags-key ::selected-leaves pname])
+                              :value branch
+                              :options (for [k (:keys spec)]
+                                         {:value k
+                                          ;; cannot select current branch
+                                          :disabled (= k branch)
+                                          :label (util/value->label k)})}
+                             ;; already transformed into a field spec, but with path containing branch
+                             ;; replace path and regenerate name, don't label separately from parent
+                             (some-> (dissoc item :name) (assoc :label nil) (add-path-info path))]}
+                 path))
+
+
+             (collection? stype) ;; also catches mtype :map
+             (let [children (if (= :map mtype)
+                              (keep item (:order spec))
+                              (filter some? item))
+                   children (cond->> children ;; if eligible for placeholder inputs, eligible for removals as well
+                              (may-placeholder mtype) 
+                              (map (fn [child-spec]
+                                     (when-not (:name child-spec)
+                                       (println "Child spec with no name:" child-spec))
+                                     {:type ::group
+                                      :id (str (path->name (:path child-spec)) "-group")
+                                      :children
+                                      [child-spec
+                                       {:type :submit
+                                        :name (path->name [base-flags-key ::removal-target])
+                                        :onclick "this.closest('form').noValidate=true;"
+                                        ;; TODO: strongly suggests need at least name/id on everything
+                                        :value (path->name (:path child-spec))
+                                        ;; TODO: configurable
+                                        :label "-"}]})))
+                   children (cond-> children
+                              ;; TODO: why did I decide not to add placeholders inputs to empty collections
+                              (and add-placeholder-inputs (may-placeholder mtype))
+                              (-> vec
                                   (conj
                                     ;; maybe use a custom internal type here
-                                    {:type    :button
+                                    {:type    :submit
                                      :name    (path->name [base-flags-key
                                                            ::placeholder-target])
                                      :onclick "this.closest('form').noValidate=true;"
                                      :value   (path->name path)
                                      ;; TODO: customizable
                                      :label   "+"})))]
-           ;; TODO: move branch-specific logic above into this cond
-           (cond
-             (some-> removal-target (= pname)) nil
+               (-> spec (assoc :children children) (add-path-info path)))
 
-             parse?
-             {:type ::collection
-              ::m/type mtype ;; TODO: does this actually generalize beyond orn?
-              :path path
-              :children [{:type :select
-                          :name (path->name [base-flags-key ::selected-leaves pname])
-                          :value leaf
-                          :options (for [k (:keys spec)]
-                                     {:value k
-                                      :disabled (= k leaf)
-                                      :label (util/value->label k)})}
-                         ;; already transformed into a field spec, but with path containing leaf
-                         ;; replace path and regenerate name, don't label separately from parent
-                         (some-> (dissoc item :name) (assoc :path path, :label nil) add-path-info)]}
-
-
-             (collection? stype) ;; also catches mtype :map
-             (assoc spec :children children)
-
+             ;; nodes that render are a strict subset of all leaf nodes (within
+             ;; the actual data structure, maybe also the schema (?)). must be
+             ;; the case because only for leaf nodes will `item` not be a field
+             ;; spec (true when this is a parseable node) or a collection of
+             ;; field specs (true when this is a collection node)
              (:render? spec)
-             (-> (assoc spec :path path)
-                 (cond->
+             (-> (cond-> spec
                    (some? item) (assoc :value item))
-                 add-path-info))))
+                 (add-path-info path)))))
        source))))
 
 ;; ------ rendering AST to markup ------
@@ -935,8 +974,6 @@
          wrapped-schema (-> (wrap-schema schema) (prep-schema options))
          encode (->> (mt/transformer xf-placeholders+defaults xf-anti-forgery)
                      (encoder wrapped-schema options))]
-         ;; TODO: memoize 
-         ;parse (m/parser wrapped-schema options)]
      (-> (collect-field-specs
            wrapped-schema
            (encode {base-data-key source})
@@ -944,6 +981,7 @@
                   (update error :in #(cons base-data-key %)))
                 errors)
            options)
+         ;(#(do (clojure.pprint/pprint %) %))
          (render-specs options)))))
 
 ;; ------ parsing ------

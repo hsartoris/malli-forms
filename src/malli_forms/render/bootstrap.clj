@@ -71,11 +71,22 @@
    (error-spans spec)])
 
 (defmethod render :submit [spec]
-  [:button.btn.btn-primary.mt-3 (props->attrs spec) (or (util/label spec) (:value spec))])
+  [:button.btn.btn-primary (props->attrs spec) (or (util/label spec) (:value spec))])
 
 (defmethod render :button [spec]
   [:button.btn.btn-secondary (assoc (props->attrs spec) :type "submit") ;; consequences?
    (or (util/label spec) (:value spec))])
+
+(defmethod render ::mf/group
+  [{:keys [children] :as spec}]
+  (list
+    [:fieldset.row
+     (props->attrs spec)
+     (when-some [l (util/label spec)] [:legend l])
+     (for [child children]
+       [:div.col child])]
+    (error-spans spec)))
+     
 
 (defmethod render ::mf/collection
   [{:keys [children] :as spec}]

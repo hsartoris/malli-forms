@@ -86,7 +86,9 @@
     [:name        [:ref ::name]]
     [:label       {:optional true} ::label]
     [:id          ::id]
-    [:type        {:optional true} ::type]
+    [:type        {:optional true
+                   :doc "HTML form element type, with some exceptions"} ::type]
+    [::m/type     {:doc "Type of malli schema that this input is representing"} any?]
     [:value       {:optional true} any?]
     [:attributes  {:optional true} ::attributes]
     [:placeholder {:optional true} string?]
@@ -145,6 +147,25 @@
        [:options [:vector [:map
                            [:value any?]
                            [:label {:optional true} string?]]]]]]]
+    [:checkbox {:encode
+                {::finalize-spec
+                 ;; checkboxes don't use 'value' in the same way other inputs do
+                 ;; here, we set 'value' to what should be sent *if the box is checked*
+                 ;; and set 'checked' to reflect what was provided in value
+                 ;; this logic differs between :boolean, boolean, true?, vs false?
+                 {:leave (fn [spec]
+                           (case (::m/type spec)
+                             (:boolean boolean? true?)
+                             (assoc spec
+                                    :value "true" ;; what will be sent to backend if checked
+                                    :checked (boolean (:value spec))) ;; whether or not checked
+                             ;; use cases?
+                             ;; "false" will be sent when the box is checked; we check when value is false
+                             false?
+                             (do (println "You'd better have a good label explaining how this false? schema works")
+                                 (assoc spec :value "false" :checked (not (:value spec))))))}}}
+
+     ::field-spec.input]
     [::m/default  ::field-spec.input]]
 
    ::options
@@ -267,7 +288,6 @@
                :=]
     :checkbox [boolean?
                :boolean
-               ;; TODO: false? is sort of nonsensical
                false?
                true?]
     :url      [url?]
@@ -781,8 +801,6 @@
   "Add name, id, and label to a spec based on provided path.
   name and id will be the same."
   [spec path]
-  (when (= path ["data" :location])
-    (println "Adding path info to" spec path))
   (let [input-name (path->name path)]
     (-> (assoc spec :name input-name, :id input-name, :path path)
         (cond->
@@ -936,6 +954,23 @@
                {:name ::render-spec}
                {:name ::finalize-spec}))))
 
+;; TODO: separate steps in render-form so final field spec AST can be inspected during dev
+;(defn- prerender-form
+;  "All processing up to calling render-specs to generate a form. See docstring
+;  on render-form for more information on steps involved."
+;  [schema source errors options]
+;  (let [options (default-options options)
+;        wrapped-schema (-> (wrap-schema schema) (prep-schema options))
+;        apply-defaults (->> (mt/transformer xf-placeholders+defaults xf-anti-forgery)
+;                            (encoder wrapped-schema options))]
+;    (collect-field-specs
+;      wrapped-schema
+;      (apply-defaults {base-data-key source})
+;      (map (fn [error]
+;             (update error :in #(cons base-data-key %)))
+;           errors)
+;      options)))
+
 (defn render-form
   "Renders a form based on a schema. Accepts various optional arguments:
     - source: initial data to seed form with. default: nil
@@ -972,11 +1007,11 @@
   ([schema source errors options]
    (let [options (default-options options)
          wrapped-schema (-> (wrap-schema schema) (prep-schema options))
-         encode (->> (mt/transformer xf-placeholders+defaults xf-anti-forgery)
-                     (encoder wrapped-schema options))]
+         apply-defaults (->> (mt/transformer xf-placeholders+defaults xf-anti-forgery)
+                             (encoder wrapped-schema options))]
      (-> (collect-field-specs
            wrapped-schema
-           (encode {base-data-key source})
+           (apply-defaults {base-data-key source})
            (map (fn [error]
                   (update error :in #(cons base-data-key %)))
                 errors)

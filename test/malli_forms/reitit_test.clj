@@ -34,6 +34,12 @@
    ["/enums"
     {::mf/schema [:enum :a "a"]
      :handler mf.mw/stub-handler}]
+   ["/true"
+    {::mf/schema  [:map [::thing true?]]
+     :handler     mf.mw/stub-handler}]
+   ["/false"
+    {::mf/schema [:map [:agree [false? {::mf/label "I disagree"}]]]
+     :handler mf.mw/stub-handler}]
    ["/math"
     ["/echo"
      {::mf/schema [:map
